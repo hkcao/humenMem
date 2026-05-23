@@ -1,0 +1,10 @@
+# Local Claude Code session state (not part of this project)
+.remember/
+
+# Runtime memory data (lives in $HANK_MEMORY_DIR, default ~/hank_memory)
+hank_memory/
+
+# Extension lockfiles / temp / deps
+**/.lock
+**/*.tmp.*
+node_modules/
