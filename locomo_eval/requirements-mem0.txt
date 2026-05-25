@@ -1,0 +1,5 @@
+# Optional: only needed for the mem0 baseline (heavy — pulls torch).
+mem0ai>=2.0
+sentence-transformers>=5.0
+chromadb>=1.0
+torch>=2.0

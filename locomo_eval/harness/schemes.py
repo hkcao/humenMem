@@ -236,3 +236,104 @@ class BM25Scheme:
 
 def _tok(s):
     return re.findall(r"[a-z0-9]+", s.lower())
+
+
+# ---------------- mem0 (external memory framework baseline) ----------------
+# mem0 stores LLM-extracted facts in a vector store and retrieves by semantic
+# similarity. Note: it uses EMBEDDINGS (here a local MiniLM), unlike the
+# theme-mem / bm25 schemes which are deliberately embedding-free per DESIGN.md.
+import os as _os
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def _account_openai(scheme, phase):
+    """Tally token usage of every OpenAI-compatible chat call made inside the
+    block (used to capture mem0's internal LLM calls, which bypass our LLM)."""
+    from openai.resources.chat.completions import Completions
+    from .llm import ACCT
+    orig = Completions.create
+
+    def wrapper(self, *a, **kw):
+        r = orig(self, *a, **kw)
+        try:
+            u = r.usage
+            rt = getattr(getattr(u, "completion_tokens_details", None),
+                         "reasoning_tokens", 0) or 0
+            ACCT.add(scheme, phase, {"prompt": u.prompt_tokens,
+                                     "completion": u.completion_tokens,
+                                     "reasoning": rt})
+        except Exception:
+            pass
+        return r
+
+    Completions.create = wrapper
+    try:
+        yield
+    finally:
+        Completions.create = orig
+
+
+def _mem0_memory(conv_id):
+    from mem0 import Memory
+    from .llm import _load_env
+    _load_env()
+    root = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)),
+                         "memory_runtime", "mem0", conv_id)
+    key = _os.environ["DEEPSEEK_API_KEY"]
+    config = {
+        "llm": {"provider": "deepseek", "config": {
+            "model": _os.environ["DEEPSEEK_MODEL"], "api_key": key,
+            "temperature": 0, "max_tokens": 4000}},
+        "embedder": {"provider": "huggingface",
+                     "config": {"model": "all-MiniLM-L6-v2"}},
+        "vector_store": {"provider": "chroma", "config": {
+            "collection_name": "c_" + re.sub(r"[^a-z0-9]", "_", conv_id.lower()),
+            "path": root}},
+    }
+    return Memory.from_config(config)
+
+
+class Mem0Scheme:
+    name = "mem0"
+
+    def __init__(self, sample, top_k=10):
+        from .llm import LLM as _L
+        self.cid = sample["sample_id"]
+        self.m = _mem0_memory(self.cid)
+        self.top_k = top_k
+        self.llm = _L(scheme=self.name)
+
+    def answer(self, q):
+        r = self.m.search(q["question"], filters={"user_id": self.cid},
+                          top_k=self.top_k)
+        mems = [x["memory"] for x in r.get("results", [])]
+        context = "\n".join(f"- {m}" for m in mems)
+        ans = _answer(self.llm, q["question"], context, 4000)
+        return {"answer": ans, "ctx_tokens": n_tokens(context),
+                "themes": [], "n_mem": len(mems)}
+
+
+def build_mem0(sample, verbose=False):
+    """Ingest a conversation into mem0 (LLM fact-extraction per session).
+    Resumable: skips sessions already added (tracked in a marker file)."""
+    import json as _json
+    cid = sample["sample_id"]
+    m = _mem0_memory(cid)
+    root = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)),
+                         "memory_runtime", "mem0", cid)
+    marker = _os.path.join(root, "ingested.json")
+    done = set(_json.load(open(marker))) if _os.path.exists(marker) else set()
+    with _account_openai("mem0", "ingest"):
+        for sk, iso, dt, turns in ds.iter_sessions(sample["conversation"]):
+            if sk in done:
+                continue
+            msgs = [{"role": "user",
+                     "content": f"[{iso}] {t['speaker']}: {ds.turn_text(t)}"}
+                    for t in turns]
+            m.add(msgs, user_id=cid)
+            done.add(sk)
+            _json.dump(sorted(done), open(marker, "w"))
+            if verbose:
+                print(f"    mem0 added {sk} ({iso})", flush=True)
+    return m

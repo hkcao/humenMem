@@ -160,6 +160,8 @@ def main():
                 sc = S.FullContextScheme(sample)
             elif name == "bm25-rag":
                 sc = S.BM25Scheme(sample, total_budget=args.budget)
+            elif name == "mem0":
+                sc = S.Mem0Scheme(sample, top_k=30)
             else:
                 continue
             print(f"  running {name}...", flush=True)

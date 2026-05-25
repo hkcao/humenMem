@@ -36,6 +36,7 @@ LOCOMO 单条对话只有 12K–24K token,整条能塞进现代上下文窗口,*
 |---|---|
 | `full-context` | 整条对话塞进窗口(准确率上界,token 最差) |
 | `bm25-rag` | 同预算下扁平 BM25 轮次检索,不分主题(对照"主题分区是否有增益") |
+| `mem0` | 外部记忆框架 [mem0](https://github.com/mem0ai/mem0):LLM 抽取事实存入**向量库**,按语义检索。用本地 MiniLM embedding(DeepSeek 无 embedding 接口)。**注意:它用了 embedding,而本设计与 bm25 是刻意无 embedding 的。** |
 
 ## 记忆怎么建(ingest)
 
@@ -63,6 +64,11 @@ LOCOMO 单条对话只有 12K–24K token,整条能塞进现代上下文窗口,*
 | theme-mem-evict | 0.52 | 0.60 | 0.20 | 0.30 | 0.60 | 0.90 | 3,904 |
 | theme-mem-accum | 0.48 | 0.50 | 0.40 | 0.00 | 0.70 | 0.80 | 4,288 |
 | bm25-rag | 0.40 | 0.30 | 0.10 | 0.40 | 0.40 | 0.80 | 3,978 |
+| mem0 (top_k=30) | 0.38 | 0.50 | 0.10 | 0.20 | 0.10 | 1.00 | 871 |
+
+**token 成本**(50 题):mem0 查询最省(prompt 47K / 单次调用 / 上下文 871),但**建库最贵**
+(ingest prompt 186K + completion 72K,19 次抽取调用);theme-mem-sf 查询 prompt 287K(两阶段);
+bm25 查询 prompt 204K;full-context 查询 prompt 936K。embedding 在 mem0 里是本地计算(不耗 API token)。
 
 ## 结论
 
@@ -74,6 +80,9 @@ LOCOMO 单条对话只有 12K–24K token,整条能塞进现代上下文窗口,*
 3. **代价**:完全由模型分类(不预置)会让主题碎片化(本例 17→40),always-on 摘要层变大,
    两阶段两次调用使总 query token 反而高于 bm25。下一步用 DESIGN.md §8 的主题合并收敛碎主题。
 4. **仍弱**:多跳(跨主题本性)、时间(精确日期上 bm25 扁平检索仍略强)。
+5. **对比 mem0**:mem0 用语义 embedding + LLM 事实抽取,**查询上下文最省(871)**,但准确率仅 0.38
+   (≈bm25,低于本设计 0.54)——事实抽取把细节压没了(单跳 0.50 尚可,时间/开放域很低),
+   且**建库代价最高**(186K prompt)。本设计在不用 embedding 的前提下准确率更高,代价是更大的查询上下文。
 
 ---
 
@@ -100,6 +109,12 @@ cd locomo_eval && ../.venv/bin/python -m eval.build --samples 0
 ../.venv/bin/python -m eval.run --samples 0 --max-questions 50 --workers 10 \
     --schemes theme-mem-sf,theme-mem-evict,theme-mem-accum,bm25-rag,full-context
 ../.venv/bin/python -m eval.report results/summary.json
+
+# 6.(可选)mem0 基线:先装重依赖,建库(慢、可断点续建),再跑
+../.venv/bin/pip install -r locomo_eval/requirements-mem0.txt
+../.venv/bin/python -m eval.build --samples 0 --mem0
+../.venv/bin/python -m eval.run --samples 0 --max-questions 50 --workers 6 \
+    --schemes mem0 --out results_mem0
 ```
 
 注:`deepseek-v4-pro` 是推理模型,completion_tokens 含 reasoning_tokens(已分别记账)。

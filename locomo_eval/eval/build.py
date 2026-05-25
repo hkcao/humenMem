@@ -19,8 +19,20 @@ from harness.llm import ACCT
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", default="0")
+    ap.add_argument("--mem0", action="store_true",
+                    help="build the mem0 baseline (vector memory) instead")
     args = ap.parse_args()
     data = ds.load()
+    if args.mem0:
+        for si in (int(x) for x in args.samples.split(",")):
+            sample = data[si]
+            print(f"[mem0:{sample['sample_id']}] ingesting...", flush=True)
+            t0 = time.time()
+            S.build_mem0(sample, verbose=True)
+            print(f"[mem0:{sample['sample_id']}] done (+{time.time()-t0:.0f}s)",
+                  flush=True)
+        print("INGEST TOKENS:", ACCT.snapshot(), flush=True)
+        return 0
     done_all = True
     for si in (int(x) for x in args.samples.split(",")):
         sample = data[si]
