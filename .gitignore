@@ -8,3 +8,13 @@ hank_memory/
 **/.lock
 **/*.tmp.*
 node_modules/
+
+# Eval secrets & venv & data
+.env
+.venv/
+locomo_eval/data/
+locomo_eval/results/
+locomo_eval/memory_runtime/
+locomo_eval/*.log
+__pycache__/
+*.pyc
