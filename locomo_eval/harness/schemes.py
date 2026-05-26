@@ -102,8 +102,8 @@ class ThemeMemStateful:
                     far; the window grows toward full-conversation size.
 
     Comparing the two shows what eviction buys: bounded tokens vs unbounded.
-    Must be run sequentially (state carries across questions)."""
-    sequential = True
+    State carries across questions; the runner executes all schemes
+    sequentially in dataset order."""
 
     def __init__(self, store: MemoryStore, total_budget=4000, evict=True,
                  accum_cap=28000):

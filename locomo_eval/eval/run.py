@@ -11,8 +11,6 @@ import os
 import sys
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-
 from harness import dataset as ds
 from harness.llm import ACCT
 from harness import schemes as S
@@ -53,38 +51,40 @@ def _one(scheme, q):
         "gold": ds.gold_answer(q), "pred": r["answer"],
         "ctx_tokens": r["ctx_tokens"], "themes": r.get("themes", []),
         "switched": r.get("switched"), "stage": r.get("stage"),
-        "correct": verdict["correct"], "judge_mode": verdict["mode"],
+        "correct": verdict["correct"], "f1": verdict.get("f1", 0.0),
+        "judge_mode": verdict["mode"],
         "latency": round(time.time() - t0, 1),
     }
 
 
-def run_scheme(scheme, questions, workers):
-    # Stateful schemes carry a window across questions -> must run in order.
-    if getattr(scheme, "sequential", False):
-        if hasattr(scheme, "reset"):
-            scheme.reset()
-        return [_one(scheme, q) for q in questions]
-    results = [None] * len(questions)
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        list(ex.map(lambda iq: results.__setitem__(iq[0], _one(scheme, iq[1])),
-                    enumerate(questions)))
-    return results
+def run_scheme(scheme, questions):
+    # All schemes run sequentially: stateful ones need it, and stateless ones
+    # must use the same order so cross-scheme comparison is apples-to-apples
+    # (e.g. continuous-conversation evaluation requires fixed question order).
+    if hasattr(scheme, "reset"):
+        scheme.reset()
+    return [_one(scheme, q) for q in questions]
 
 
 def aggregate(results):
-    by_cat = defaultdict(lambda: [0, 0])  # cat -> [correct, total]
+    by_cat = defaultdict(lambda: [0, 0, 0.0])  # cat -> [correct, total, f1_sum]
     ctx = []
     for r in results:
         by_cat[r["category"]][0] += int(r["correct"])
         by_cat[r["category"]][1] += 1
+        by_cat[r["category"]][2] += float(r.get("f1", 0.0))
         ctx.append(r["ctx_tokens"])
     tot_c = sum(v[0] for v in by_cat.values())
     tot_n = sum(v[1] for v in by_cat.values())
+    tot_f1 = sum(v[2] for v in by_cat.values())
     return {
         "overall_acc": round(tot_c / tot_n, 4) if tot_n else 0,
+        "overall_f1": round(tot_f1 / tot_n, 4) if tot_n else 0,
         "n": tot_n,
         "by_category": {ds.CAT_NAME.get(c, c): {
-            "acc": round(v[0] / v[1], 4) if v[1] else 0, "n": v[1]}
+            "acc": round(v[0] / v[1], 4) if v[1] else 0,
+            "f1": round(v[2] / v[1], 4) if v[1] else 0,
+            "n": v[1]}
             for c, v in sorted(by_cat.items())},
         "avg_ctx_tokens": round(sum(ctx) / len(ctx)) if ctx else 0,
         "max_ctx_tokens": max(ctx) if ctx else 0,
@@ -97,13 +97,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", default="0", help="comma sample indices")
     ap.add_argument("--max-questions", type=int, default=50)
-    ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--budget", type=int, default=4000)
     ap.add_argument("--schemes", default="theme-mem,full-context,bm25-rag")
     ap.add_argument("--strict", action="store_true", help="theme-mem top-1 routing")
-    ap.add_argument("--seq-order", action="store_true",
-                    help="use first-N questions in original order (for stateful "
-                         "eviction schemes, where question order matters)")
+    ap.add_argument("--stratified", action="store_true",
+                    help="stratified sampling across categories (default: keep "
+                         "original conversation order so topic-switching effects "
+                         "are visible and stateful schemes are evaluated fairly)")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
 
@@ -116,11 +116,11 @@ def main():
     for si in sample_idx:
         sample = data[si]
         cid = sample["sample_id"]
-        if args.seq_order:
+        if args.stratified:
+            questions = stratified(sample["qa"], args.max_questions)
+        else:
             questions = sample["qa"][:args.max_questions] if args.max_questions \
                 else sample["qa"]
-        else:
-            questions = stratified(sample["qa"], args.max_questions)
         print(f"\n### sample {si} ({cid}): {len(questions)} questions "
               f"(of {len(sample['qa'])}) | schemes={want}", flush=True)
 
@@ -166,12 +166,13 @@ def main():
                 continue
             print(f"  running {name}...", flush=True)
             t0 = time.time()
-            res = run_scheme(sc, questions, args.workers)
+            res = run_scheme(sc, questions)
             per_scheme_results[name] = res
             rep = aggregate(res)
             rep["wall_s"] = round(time.time() - t0)
             scheme_reports[name] = rep
             print(f"    {name}: acc={rep['overall_acc']} "
+                  f"f1={rep['overall_f1']} "
                   f"avg_ctx={rep['avg_ctx_tokens']} ({rep['wall_s']}s)", flush=True)
 
         all_report[cid] = {

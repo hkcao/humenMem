@@ -16,7 +16,7 @@ def main(path="results/summary.json"):
         schemes = blob["schemes"]
         tokens = blob["tokens"]  # "scheme/phase" -> {prompt,completion,reasoning,calls}
         print(f"\n## {cid}\n")
-        # accuracy table
+        # accuracy table: LLM-judge (paraphrase-tolerant)
         head = ["scheme", "overall"] + CATS + ["avg_ctx"]
         rows = [head]
         for name, rep in schemes.items():
@@ -26,7 +26,19 @@ def main(path="results/summary.json"):
                 row.append(f"{bc[c]['acc']:.2f}" if c in bc else "-")
             row.append(str(rep["avg_ctx_tokens"]))
             rows.append(row)
+        print("### LLM-judge accuracy\n")
         _print_table(rows)
+
+        # F1 table (LOCOMO-official scoring)
+        print("\n### token-F1 (LOCOMO official; cat5 = abstain 0/1)\n")
+        frows = [["scheme", "overall"] + CATS]
+        for name, rep in schemes.items():
+            bc = rep["by_category"]
+            row = [name, f"{rep.get('overall_f1', 0):.2f}"]
+            for c in CATS:
+                row.append(f"{bc[c].get('f1', 0):.2f}" if c in bc else "-")
+            frows.append(row)
+        _print_table(frows)
 
         # token cost table (query phase = inference; ingest = one-time build)
         print("\n### token cost\n")
