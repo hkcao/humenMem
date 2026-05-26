@@ -274,16 +274,20 @@ def _account_openai(scheme, phase):
         Completions.create = orig
 
 
-def _mem0_memory(conv_id):
+def _mem0_memory(conv_id, root_subdir="mem0"):
     from mem0 import Memory
     from .llm import _load_env
     _load_env()
     root = _os.path.join(_os.path.dirname(_os.path.dirname(__file__)),
-                         "memory_runtime", "mem0", conv_id)
-    key = _os.environ["DEEPSEEK_API_KEY"]
+                         "memory_runtime", root_subdir, conv_id)
+    # Route mem0's internal LLM calls through the OpenAI-compatible adapter
+    # so any base_url works (DeepSeek, MiniMax, etc.) — the built-in
+    # "deepseek" provider hard-codes api.deepseek.com.
     config = {
-        "llm": {"provider": "deepseek", "config": {
-            "model": _os.environ["DEEPSEEK_MODEL"], "api_key": key,
+        "llm": {"provider": "openai", "config": {
+            "model": _os.environ["DEEPSEEK_MODEL"],
+            "api_key": _os.environ["DEEPSEEK_API_KEY"],
+            "openai_base_url": _os.environ["DEEPSEEK_BASE_URL"],
             "temperature": 0, "max_tokens": 4000}},
         "embedder": {"provider": "huggingface",
                      "config": {"model": "all-MiniLM-L6-v2"}},

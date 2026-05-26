@@ -188,19 +188,27 @@ class Mem0Live:
     Optional — only available if `mem0` is installed."""
     name = "mem0-live"
 
-    def __init__(self, top_k=30):
+    def __init__(self, conv_id, top_k=30):
         try:
-            from mem0 import Memory  # type: ignore
+            import mem0  # type: ignore  # noqa: F401
         except ImportError as e:
             raise RuntimeError("mem0 not installed; pip install -r "
                                "requirements-mem0.txt") from e
-        self._Memory = Memory
+        from .schemes import _mem0_memory
+        self._mem0_memory = _mem0_memory
+        self.conv_id = conv_id
         self.llm = LLM(scheme=self.name)
         self.top_k = top_k
         self.reset()
 
     def reset(self):
-        self.mem = self._Memory()
+        # Use a separate, ephemeral chroma path so we don't collide with the
+        # cold-start mem0 store at memory_runtime/mem0/<conv>/.
+        import shutil, os
+        root = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "..", "memory_runtime", "mem0_live", self.conv_id)
+        shutil.rmtree(root, ignore_errors=True)
+        self.mem = self._mem0_memory(self.conv_id, root_subdir="mem0_live")
         self._user_id = "live_user"
 
     def ingest_turn(self, turn, sm):
@@ -213,6 +221,9 @@ class Mem0Live:
             # mem0 sometimes rejects empty/malformed; skip silently — the eval
             # records this scheme's accuracy honestly under failures.
             pass
+        self._n_ingested = getattr(self, "_n_ingested", 0) + 1
+        if self._n_ingested % 25 == 0:
+            print(f"    mem0-live ingested {self._n_ingested} turns", flush=True)
 
     def on_session_end(self, sm):
         pass
@@ -245,5 +256,5 @@ LIVE_SCHEMES = {
     "theme-mem-accum-live":  lambda cfg: ThemeMemLive(cfg["conv_id"],
                                                       total_budget=cfg["budget"],
                                                       mode="accum"),
-    "mem0-live":             lambda cfg: Mem0Live(),
+    "mem0-live":             lambda cfg: Mem0Live(cfg["conv_id"]),
 }

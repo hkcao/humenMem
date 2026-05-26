@@ -1,0 +1,185 @@
+{
+  "conv-26": {
+    "schemes": {
+      "full-context-live": {
+        "overall_acc": 0.66,
+        "overall_f1": 0.5157,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.6842,
+            "f1": 0.5265,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.75,
+            "f1": 0.577,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.2857,
+            "f1": 0.2762,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 5887,
+        "max_ctx_tokens": 18535,
+        "n_overflow": 0,
+        "wall_s": 406,
+        "model_ctx": 128000
+      },
+      "bm25-rag-live": {
+        "overall_acc": 0.32,
+        "overall_f1": 0.2163,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.3158,
+            "f1": 0.2277,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.3333,
+            "f1": 0.2028,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.2857,
+            "f1": 0.2318,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 1128,
+        "max_ctx_tokens": 1487,
+        "n_overflow": 0,
+        "wall_s": 394,
+        "model_ctx": 128000
+      },
+      "theme-mem-sf-live": {
+        "overall_acc": 0.1,
+        "overall_f1": 0.0672,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.2632,
+            "f1": 0.1258,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.0,
+            "f1": 0.0076,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.0,
+            "f1": 0.1124,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 2283,
+        "max_ctx_tokens": 4657,
+        "n_overflow": 0,
+        "wall_s": 1103,
+        "model_ctx": 128000
+      },
+      "theme-mem-evict-live": {
+        "overall_acc": 0.1,
+        "overall_f1": 0.0957,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.2105,
+            "f1": 0.178,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.0,
+            "f1": 0.0218,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.1429,
+            "f1": 0.1259,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 2336,
+        "max_ctx_tokens": 4899,
+        "n_overflow": 0,
+        "wall_s": 1348,
+        "model_ctx": 128000
+      },
+      "theme-mem-accum-live": {
+        "overall_acc": 0.06,
+        "overall_f1": 0.0687,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.1579,
+            "f1": 0.118,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.0,
+            "f1": 0.0078,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.0,
+            "f1": 0.1436,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 2359,
+        "max_ctx_tokens": 5512,
+        "n_overflow": 0,
+        "wall_s": 1355,
+        "model_ctx": 128000
+      }
+    },
+    "tokens": {
+      "full-context-live/query": {
+        "prompt": 290139,
+        "completion": 13299,
+        "reasoning": 0,
+        "calls": 50
+      },
+      "judge/judge": {
+        "prompt": 33732,
+        "completion": 44805,
+        "reasoning": 1024,
+        "calls": 250
+      },
+      "bm25-rag-live/query": {
+        "prompt": 59676,
+        "completion": 11694,
+        "reasoning": 341,
+        "calls": 50
+      },
+      "theme-mem-sf/query": {
+        "prompt": 121773,
+        "completion": 18666,
+        "reasoning": 0,
+        "calls": 66
+      },
+      "theme-mem/ingest": {
+        "prompt": 157931,
+        "completion": 171489,
+        "reasoning": 1406,
+        "calls": 115
+      },
+      "theme-mem-evict/query": {
+        "prompt": 128241,
+        "completion": 19899,
+        "reasoning": 0,
+        "calls": 70
+      },
+      "theme-mem-accum/query": {
+        "prompt": 124038,
+        "completion": 17328,
+        "reasoning": 1054,
+        "calls": 67
+      }
+    }
+  }
+}

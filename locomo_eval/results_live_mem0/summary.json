@@ -1,0 +1,47 @@
+{
+  "conv-26": {
+    "schemes": {
+      "mem0-live": {
+        "overall_acc": 0.0,
+        "overall_f1": 0.0135,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.0,
+            "f1": 0.0,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.0,
+            "f1": 0.0,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.0,
+            "f1": 0.0966,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 0,
+        "max_ctx_tokens": 0,
+        "n_overflow": 0,
+        "wall_s": 4629,
+        "model_ctx": 128000
+      }
+    },
+    "tokens": {
+      "mem0-live/query": {
+        "prompt": 4713,
+        "completion": 4142,
+        "reasoning": 0,
+        "calls": 50
+      },
+      "judge/judge": {
+        "prompt": 5675,
+        "completion": 9139,
+        "reasoning": 0,
+        "calls": 50
+      }
+    }
+  }
+}

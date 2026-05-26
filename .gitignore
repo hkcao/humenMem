@@ -16,6 +16,7 @@ locomo_eval/data/
 locomo_eval/results/
 locomo_eval/results_mem0/
 locomo_eval/memory_runtime/
+locomo_eval/memory_runtime_deepseek/
 locomo_eval/*.log
 __pycache__/
 *.pyc

@@ -6,9 +6,20 @@ can report token cost per scheme for ingest vs query phases.
 """
 import os
 import json
+import re
 import time
 import threading
 from collections import defaultdict
+
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(s: str) -> str:
+    """Remove <think>...</think> blocks emitted inline by reasoning models
+    (MiniMax-M2.x, etc.). Tolerant of an unclosed trailing block."""
+    if not s or "<think>" not in s.lower():
+        return s
+    return _THINK_RE.sub("", s).strip()
 
 from openai import OpenAI
 import tiktoken
@@ -96,7 +107,7 @@ class LLM:
                     "completion": u.completion_tokens,
                     "reasoning": rt,
                 })
-                return r.choices[0].message.content or ""
+                return _strip_think(r.choices[0].message.content or "")
             except Exception as e:  # noqa: BLE001
                 last = e
                 time.sleep(min(2 ** attempt, 20))
