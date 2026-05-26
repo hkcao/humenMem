@@ -17,7 +17,7 @@ def main(path="results/summary.json"):
         tokens = blob["tokens"]  # "scheme/phase" -> {prompt,completion,reasoning,calls}
         print(f"\n## {cid}\n")
         # accuracy table: LLM-judge (paraphrase-tolerant)
-        head = ["scheme", "overall"] + CATS + ["avg_ctx"]
+        head = ["scheme", "overall"] + CATS + ["avg_ctx", "peak_ctx", "oom"]
         rows = [head]
         for name, rep in schemes.items():
             bc = rep["by_category"]
@@ -25,6 +25,8 @@ def main(path="results/summary.json"):
             for c in CATS:
                 row.append(f"{bc[c]['acc']:.2f}" if c in bc else "-")
             row.append(str(rep["avg_ctx_tokens"]))
+            row.append(str(rep.get("max_ctx_tokens", 0)))
+            row.append(str(rep.get("n_overflow", 0)))
             rows.append(row)
         print("### LLM-judge accuracy\n")
         _print_table(rows)

@@ -39,17 +39,20 @@ def stratified(qa, max_q, seed=0):
     return out
 
 
-def _one(scheme, q):
+def _one(scheme, q, model_ctx):
     t0 = time.time()
     try:
         r = scheme.answer(q)
     except Exception as e:  # noqa: BLE001
         r = {"answer": f"[ERROR: {e}]", "ctx_tokens": 0, "themes": []}
     verdict = J.judge(q, r["answer"])
+    ctx = r["ctx_tokens"]
+    overflow = bool(model_ctx and ctx > model_ctx)
     return {
         "question": q["question"], "category": q.get("category"),
         "gold": ds.gold_answer(q), "pred": r["answer"],
-        "ctx_tokens": r["ctx_tokens"], "themes": r.get("themes", []),
+        "ctx_tokens": ctx, "ctx_overflow": overflow,
+        "themes": r.get("themes", []),
         "switched": r.get("switched"), "stage": r.get("stage"),
         "correct": verdict["correct"], "f1": verdict.get("f1", 0.0),
         "judge_mode": verdict["mode"],
@@ -57,13 +60,13 @@ def _one(scheme, q):
     }
 
 
-def run_scheme(scheme, questions):
+def run_scheme(scheme, questions, model_ctx):
     # All schemes run sequentially: stateful ones need it, and stateless ones
     # must use the same order so cross-scheme comparison is apples-to-apples
     # (e.g. continuous-conversation evaluation requires fixed question order).
     if hasattr(scheme, "reset"):
         scheme.reset()
-    return [_one(scheme, q) for q in questions]
+    return [_one(scheme, q, model_ctx) for q in questions]
 
 
 def aggregate(results):
@@ -88,6 +91,7 @@ def aggregate(results):
             for c, v in sorted(by_cat.items())},
         "avg_ctx_tokens": round(sum(ctx) / len(ctx)) if ctx else 0,
         "max_ctx_tokens": max(ctx) if ctx else 0,
+        "n_overflow": sum(1 for r in results if r.get("ctx_overflow")),
         "n_switched": sum(1 for r in results if r.get("switched")),
         "n_stage1": sum(1 for r in results if r.get("stage") == 1),
     }
@@ -98,6 +102,10 @@ def main():
     ap.add_argument("--samples", default="0", help="comma sample indices")
     ap.add_argument("--max-questions", type=int, default=50)
     ap.add_argument("--budget", type=int, default=4000)
+    ap.add_argument("--model-ctx", type=int, default=0,
+                    help="declared model window (tokens); questions whose "
+                         "ctx_tokens exceed this are recorded as overflow. "
+                         "0 disables the check.")
     ap.add_argument("--schemes", default="theme-mem,full-context,bm25-rag")
     ap.add_argument("--strict", action="store_true", help="theme-mem top-1 routing")
     ap.add_argument("--stratified", action="store_true",
@@ -166,14 +174,17 @@ def main():
                 continue
             print(f"  running {name}...", flush=True)
             t0 = time.time()
-            res = run_scheme(sc, questions)
+            res = run_scheme(sc, questions, args.model_ctx)
             per_scheme_results[name] = res
             rep = aggregate(res)
             rep["wall_s"] = round(time.time() - t0)
+            rep["model_ctx"] = args.model_ctx
             scheme_reports[name] = rep
             print(f"    {name}: acc={rep['overall_acc']} "
                   f"f1={rep['overall_f1']} "
-                  f"avg_ctx={rep['avg_ctx_tokens']} ({rep['wall_s']}s)", flush=True)
+                  f"avg_ctx={rep['avg_ctx_tokens']} "
+                  f"peak={rep['max_ctx_tokens']} "
+                  f"oom={rep['n_overflow']} ({rep['wall_s']}s)", flush=True)
 
         all_report[cid] = {
             "schemes": scheme_reports,
