@@ -1,0 +1,119 @@
+{
+  "conv-26": {
+    "schemes": {
+      "theme-mem-sf-live": {
+        "overall_acc": 0.32,
+        "overall_f1": 0.2702,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.2105,
+            "f1": 0.1837,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.4167,
+            "f1": 0.38,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.2857,
+            "f1": 0.1285,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 2104,
+        "max_ctx_tokens": 4697,
+        "n_overflow": 0,
+        "wall_s": 1347,
+        "model_ctx": 128000
+      },
+      "theme-mem-evict-live": {
+        "overall_acc": 0.4,
+        "overall_f1": 0.265,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.4211,
+            "f1": 0.2177,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.5,
+            "f1": 0.3421,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.0,
+            "f1": 0.129,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 1990,
+        "max_ctx_tokens": 4239,
+        "n_overflow": 0,
+        "wall_s": 1322,
+        "model_ctx": 128000
+      },
+      "theme-mem-accum-live": {
+        "overall_acc": 0.48,
+        "overall_f1": 0.3281,
+        "n": 50,
+        "by_category": {
+          "multi-hop": {
+            "acc": 0.6316,
+            "f1": 0.3462,
+            "n": 19
+          },
+          "temporal": {
+            "acc": 0.4167,
+            "f1": 0.365,
+            "n": 24
+          },
+          "open-domain": {
+            "acc": 0.2857,
+            "f1": 0.1523,
+            "n": 7
+          }
+        },
+        "avg_ctx_tokens": 2109,
+        "max_ctx_tokens": 5283,
+        "n_overflow": 0,
+        "wall_s": 1286,
+        "model_ctx": 128000
+      }
+    },
+    "tokens": {
+      "theme-mem-sf/query": {
+        "prompt": 124774,
+        "completion": 17594,
+        "reasoning": 798,
+        "calls": 56
+      },
+      "judge/judge": {
+        "prompt": 22328,
+        "completion": 27216,
+        "reasoning": 2689,
+        "calls": 150
+      },
+      "theme-mem/ingest": {
+        "prompt": 157843,
+        "completion": 174622,
+        "reasoning": 7473,
+        "calls": 114
+      },
+      "theme-mem-evict/query": {
+        "prompt": 107066,
+        "completion": 15258,
+        "reasoning": 871,
+        "calls": 52
+      },
+      "theme-mem-accum/query": {
+        "prompt": 122330,
+        "completion": 16159,
+        "reasoning": 1454,
+        "calls": 55
+      }
+    }
+  }
+}

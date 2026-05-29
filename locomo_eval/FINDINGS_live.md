@@ -15,14 +15,16 @@
 
 ## 主表：准确率 (overall_acc)
 
-| Scheme | DeepSeek-v4-pro<br>cold-start | MiniMax-M2.7<br>cold-start | MiniMax-M2.7<br>live (DialSim) |
-|---|---:|---:|---:|
-| full-context | 0.70 | **0.44** | **0.66** |
-| bm25-rag | 0.40 | 0.34 | 0.32 |
-| theme-mem-sf | **0.54** | 0.24 | 0.10 |
-| theme-mem-evict | 0.52 | 0.16 | 0.10 |
-| theme-mem-accum | 0.48 | 0.22 | 0.06 |
-| mem0 | 0.38 | 0.06 | 0.00 |
+| Scheme | DeepSeek-v4-pro<br>cold-start | MiniMax-M2.7<br>cold-start | MiniMax-M2.7<br>live (DialSim)<br>(pre-fix) | MiniMax-M2.7<br>live (DialSim)<br>**(post-fix)** |
+|---|---:|---:|---:|---:|
+| full-context | 0.70 | 0.44 | 0.66 | — |
+| bm25-rag | 0.40 | 0.34 | 0.32 | — |
+| theme-mem-sf | **0.54** | 0.24 | 0.10 | **0.32** |
+| theme-mem-evict | 0.52 | 0.16 | 0.10 | **0.40** |
+| theme-mem-accum | 0.48 | 0.22 | 0.06 | **0.48** |
+| mem0 | 0.38 | 0.06 | 0.00 | — |
+
+(post-fix) = `ThemeMemLive.answer` 把 in-progress 转录拼进 inner scheme 的 prompt（详见 §Q3 (a)）。`full-context-live`/`bm25-rag-live`/`mem0-live` 本来就把 in-progress turn 喂模型，不需要修，未重跑。
 
 （DeepSeek 列的 50 题与 MiniMax 列的 50 题是同一组前 50 题；类别构成在 MiniMax 子表里只剩 multi-hop / temporal / open-domain — 这 50 题里没出现 single-hop 和 adversarial。）
 
@@ -85,6 +87,71 @@ mem0 的事实抽取（`Memory.add`）完全靠 LLM。
 2. **Bounded window 的"切主题即驱逐"假设也需要重新检验**：在 MiniMax cold-start 下 evict (0.16) 已经显著弱于 accum (0.22)，反过来了。原 DeepSeek 实验里"驱逐不损失"的结论换了模型就翻盘。
 3. **bm25 是更稳健的基线**。如果上层应用要 model-agnostic，bm25 才是出发点；主题化层只有在 LLM 足够强时才贡献。
 4. **要换模型再跑前请同时重建记忆库**：否则 ingest 时模型 A 切出的主题边界会拖累查询时模型 B 的路由（本次实验就是这么处理的，但被替换前如果不重建，结论会更黑）。
+
+---
+
+## 复盘：Q1/Q2/Q3 深入
+
+### Q1：Judge 模型也跟着换了，是个未隔离变量
+
+`eval/judge.py` 的 LLM-judge 用同一个 `LLM(scheme="judge")` 读同一组 env，所以三组对比里 judge 模型与 solver 同步切换。Judge prompt 比较宽（"prediction contains the gold fact = correct"），临界 case 受影响。要严格隔离，需要存好的 (q, gold, pred) 离线用固定 judge 重判一遍。
+
+### Q2：`<think>` 块的去留
+
+MiniMax-M2.7 把推理 `<think>...</think>` 内联到 content 里，**不像 DeepSeek-v4-pro 走 `completion_tokens_details.reasoning_tokens` 分离记账**（summary 里 reasoning 列大量为 0 就是这个原因）。
+
+- **不剥**：`chat_json` 路径直接 fail（json.loads 解析 `<think>...</think>{...}` 报错），sf/evict 的 stage-1 路由、mem0 内部事实抽取、judge 全部走 `except` 静默 fallback —— 是当前实现下最有破坏性的失败模式。
+- **剥**（现状）：JSON 模式恢复正常；但 `<think>` 仍然吃 `max_tokens` 额度（实测一个问题 thinking 段就占 140 tokens 里的一半多），长 prompt + 短 `max_tokens` 会把真正答案截掉。
+- 推理过程本身**对题目准确率是正向**的（trace 见 §Q3）：MiniMax 用 think 正确推出 "yesterday + 2023-05-08 → 2023-05-07"。问题是只有 think 看得见正确数据时才有用。
+
+### Q3：一道题打开看每一步——Caroline LGBTQ support group 何时去？
+
+完整 trace 在 `scripts/trace_sf_caroline.py` + `scripts/trace_sf_caroline.json`。三个分层结论：
+
+**(a) Live 模式下发现一个实现 bug，已修。**
+
+`build_timeline` 按 evidence 的最末 dia_id 注入题目（这道题 evidence=`D1:3`，所以题目在 session_1 第 3 个 turn 之后立刻提问），但 `ThemeMemLive.ingest_turn` 只把 turn 缓存到 `_cur_buf`，**`MemoryStore.ingest_session()` 要 session_end 才跑**（分主题/蒸馏 core 是按 session 批做的 LLM 调用）。所以题目触发时 store 完全是空的。
+
+更糟的是 `live_schemes.py` 旧实现把 `in_progress_tokens` 加进 `ctx_tokens` 做统计，但**没有把 in-progress 转录加到 inner scheme 的 prompt 里**：
+```python
+ip_text, ip_tok = self._in_progress_context()
+r["ctx_tokens"] = r.get("ctx_tokens", 0) + ip_tok  # 算进去
+# ip_text 从未喂给 LLM
+```
+对比同条件下：full-context-live 把每 turn 立刻 append 到 `_lines` 喂全文 → 答对；BM25Live 立刻入索引 → 答对；ThemeMemLive 缓存但不喂 → 答 "No information available."。这直接解释了 sf-live/evict-live/accum-live 的 temporal acc 全为 0.00（24 题 0 对）：只要 evidence 在当前 session 内、问题在当前 session 内被问，store 空 + buffer 不喂 = 必丢分。
+
+修复（`live_schemes.py:ThemeMemLive.answer`）：monkey-patch `store.summaries_context` 把 in-progress 转录拼到末尾的 `## In-progress session (not yet committed to themes)` block，inner scheme 代码不动。
+
+修后 smoke 验证：同样 3 个 turn 的 in-progress + 空主题，MiniMax-M2.7 stage-1 直接答 "Yesterday (7 May 2023, the day before the session on 8 May 2023)" —— 同模型、同数据，从全错变全对。**完整重跑见下表**（`results_live_fixed/`）。
+
+**(b) Cold-start sf 的失败是另一种：summary 蒸馏吃掉了时间锚点。**
+
+同一题在 cold-start sf 里 Stage 1 直接回答（不走 Stage 2 BM25 detail）："Caroline went to the LGBTQ support group on May 8, 2023" —— 错（应是 May 7）。看 core mem 和 theme summary：
+```
+- Attended an LGBTQ support group; found transgender stories particularly inspiring
+[2023-05-08] Caroline catches up with Melanie and shares how attending an LGBTQ support group helped her feel accepted...
+```
+原文 `D1:3 Caroline: I went to a LGBTQ support group yesterday...` 中的 "yesterday" 在 `_segment` 出主题和 `_update_core` 蒸馏 core 两次 LLM 处理里都被丢掉，只剩下 session 的日期 2023-05-08。模型用了它能看见的唯一日期。
+
+这**不是 MiniMax 推理错**——上面 Q2 的 trace 证明完整 context 下同模型可以正确算出 May 7。这是**蒸馏 lossy**。DESIGN.md 的 "core/summary/detail" 三层架构假设的"摘要保留关键事实"在 MiniMax-M2.7 的蒸馏 prompt 下没成立：时间状语/相对时间这类容易被认为是"上下文细节"的信息被丢了。
+
+**(c) Theme 路由对 MiniMax 的依赖太强（cold-start 已弱、live 更弱）。**
+
+trace 显示 stage-1 路由本身是 OK 的（`need_details: ["lgbtq support group"]` 选对了主题）；但跟其他题对比，14 个主题候选下 MiniMax 经常 fallback 到"打开所有主题"（见 "How long has Caroline had her current group of friends for?" 的 trace：`themes=[全部 14 个]`），等价于把 budget 摊到全部 theme detail 上做 BM25。DeepSeek 在原 README 里就报告了"主题碎片化 17→40 摘要变大"对路由命中率的代价，MiniMax 因为更弱的指令跟随把这件事放大。
+
+### Bug 修复后的新现象
+
+修完 `ThemeMemLive` 的 in-progress prompt bug 之后，原结论被大幅改写：
+
+1. **三个主题化方案全部回到可用区间**：sf 0.10→0.32, evict 0.10→0.40, accum 0.06→0.48。所有方案都超过了对应的 cold-start MiniMax 版本（cold sf 0.24 / evict 0.16 / accum 0.22）—— **live 模式现在比 cold-start 准**，因为 in-progress 转录给了模型"原始 evidence"，绕过了 lossy 蒸馏带来的时间锚点丢失（见 §Q3 (b)）。
+2. **排序翻转**：cold-start 是 sf(0.24) > accum(0.22) > evict(0.16)；live post-fix 是 **accum(0.48) > evict(0.40) > sf(0.32)**。流式 ingest 早期主题 detail 还少，"累积"的代价（DESIGN.md §4 担忧的"窗口膨胀"）尚未达到拐点，反而比"切就驱逐"多保留了有用上下文。
+3. **"切主题即驱逐 ≈ 无状态"的结论不成立了**：原 README/FINDINGS 用 DeepSeek + cold-start 报告 evict (0.52) ≈ sf (0.54)，本次 MiniMax + live 显示 evict (0.40) > sf (0.32) 反过来——eviction 比无状态多带了"上一题剩下的主题 detail"作为隐含上下文，在 live 模式短上下文场景下是净正面。
+
+### TODO 
+
+- (可选) 用固定 judge re-judge 三组 pred，隔离 judge 变量。
+
+---
 
 ## 数据出处
 

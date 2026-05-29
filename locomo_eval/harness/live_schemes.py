@@ -159,25 +159,43 @@ class ThemeMemLive:
     def answer(self, q_text):
         from .schemes import ThemeMemSummaryFirst, ThemeMemStateful
 
-        # Pick the inner retrieval policy by mode.
-        if self.mode == "sf":
-            inner = ThemeMemSummaryFirst(self.store, total_budget=self.total_budget)
-            r = inner.answer({"question": q_text})
-        else:
-            inner = ThemeMemStateful(self.store, total_budget=self.total_budget,
-                                     evict=(self.mode == "evict"))
-            # carry our cross-question state into the inner scheme
-            inner.prev_themes = self._prev_themes
-            inner.visited = set(self._visited)
-            inner.n_switch = self._n_switch
-            r = inner.answer({"question": q_text})
-            self._prev_themes = inner.prev_themes
-            self._visited = inner.visited
-            self._n_switch = inner.n_switch
-
-        # Augment with in-progress session turns the store hasn't ingested yet.
+        # Expose the in-progress (not-yet-ingested) session's turns to the
+        # inner scheme by augmenting summaries_context. Earlier the in-progress
+        # text was counted in ctx_tokens but never actually fed to the LLM —
+        # questions injected mid-session against an empty/sparse store would
+        # blind-abstain. Patching summaries_context surgically keeps the inner
+        # scheme code untouched.
         ip_text, ip_tok = self._in_progress_context()
-        r["ctx_tokens"] = r.get("ctx_tokens", 0) + ip_tok
+        _orig_sctx = self.store.summaries_context
+        if ip_text:
+            def _patched():
+                sctx, stok = _orig_sctx()
+                augmented = (sctx + "\n\n## In-progress session "
+                                    "(not yet committed to themes)\n" + ip_text)
+                return augmented, stok + ip_tok
+            self.store.summaries_context = _patched
+        try:
+            if self.mode == "sf":
+                inner = ThemeMemSummaryFirst(self.store,
+                                              total_budget=self.total_budget)
+                r = inner.answer({"question": q_text})
+            else:
+                inner = ThemeMemStateful(self.store,
+                                          total_budget=self.total_budget,
+                                          evict=(self.mode == "evict"))
+                inner.prev_themes = self._prev_themes
+                inner.visited = set(self._visited)
+                inner.n_switch = self._n_switch
+                r = inner.answer({"question": q_text})
+                self._prev_themes = inner.prev_themes
+                self._visited = inner.visited
+                self._n_switch = inner.n_switch
+        finally:
+            if ip_text:
+                self.store.summaries_context = _orig_sctx
+
+        # ctx_tokens already includes ip_tok via the augmented context above;
+        # surface ip_tok separately so reports can attribute it.
         r["in_progress_tokens"] = ip_tok
         return r
 
