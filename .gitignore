@@ -19,3 +19,13 @@ locomo_eval/memory_runtime/
 locomo_eval/*.log
 __pycache__/
 *.pyc
+
+# LongMemEval raw datasets (large; download via run_phaseb.py)
+eval/longmemeval/data/
+eval/longmemeval/results/*.log
+# never commit API keys
+.minimax_key
+*.key
+
+# macOS junk
+.DS_Store

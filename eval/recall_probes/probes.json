@@ -1,0 +1,27 @@
+{
+  "entries": [
+    {
+      "topic": "deploy-staging",
+      "source": "user",
+      "desc": "Staging environment deployment config",
+      "content": "Staging deploy notes. The staging database host is db-staging.internal:5432 and the staging API key is sk-staging-abc123."
+    },
+    {
+      "topic": "deploy-prod",
+      "source": "user",
+      "desc": "Production environment deployment config",
+      "content": "Production deploy notes. The prod database host is db-prod.internal:5432 and the prod API key is sk-prod-xyz789."
+    },
+    {
+      "topic": "recipe-notes",
+      "source": "user",
+      "desc": "Cooking and recipe notes",
+      "content": "Sourdough starter needs feeding every 12 hours with equal parts flour and water by weight."
+    }
+  ],
+  "queries": [
+    {"q": "staging database host", "gold_topic": "deploy-staging", "must_include": "db-staging.internal"},
+    {"q": "production api key", "gold_topic": "deploy-prod", "must_include": "sk-prod-xyz789"},
+    {"q": "how often to feed sourdough starter", "gold_topic": "recipe-notes", "must_include": "12 hours"}
+  ]
+}
