@@ -1,57 +1,61 @@
-# LongMemEval Phase B — Results & Status
+# LongMemEval Phase B — Results
 
-Config: our BM25 session retrieval (`config=bm25`, `topk=10`) → answer with **MiniMax-M3**
-→ judge with **MiniMax-M3** using the **verbatim official LongMemEval prompts**
-(per-type + abstention). Dataset: `LongMemEval_S` (500 questions, ~115k-token haystack).
+**Config:** our BM25 session retrieval (`config=bm25`, `topk=10`) → answer with
+**MiniMax-M3** → judge with **MiniMax-M3** using the **verbatim official LongMemEval
+prompts** (per-type + abstention). **Dataset:** `LongMemEval_S` (500 questions,
+~115k-token haystack per question). **Complete: 500/500 generated and judged.**
 
-## Status: partially complete — blocked on MiniMax quota
+## Headline
 
-| Item | State |
+| Metric | Score |
 |---|---|
-| Harness (faithful replication) | ✅ done & validated |
-| 12-question smoke sample (gen + judge) | ✅ complete |
-| Full 500 — **generation** | ⚠️ **412/500 saved** (`results/hyp_bm25_k10_nall.jsonl`) |
-| Full 500 — **judging** | ❌ 0/500 — MiniMax Token Plan quota exhausted |
+| **Overall accuracy** (micro, non-abstention, n=470) | **0.834** |
+| **Task-averaged accuracy** (mean of 6 types) | **0.817** |
+| **Abstention accuracy** (n=30) | **0.833** |
 
-The MiniMax Token Plan hit its usage cap mid-run:
+## Per question type
 
-> `rate_limit_error: 已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。(2056)`
-
-Each generation call carries a ~30k-token retrieved context, so the 500-question sweep
-exceeded the plan's quota. This is an external account limit, not a harness issue.
-
-## What we have: 12-question smoke sample (balanced, 2 per type)
-
-Validates the end-to-end pipeline; **not** the benchmark result (n is tiny).
-
-| question_type | acc | n |
+| question_type | accuracy | n |
 |---|---|---|
-| single-session-user | 1.00 | 2 |
-| single-session-assistant | 1.00 | 2 |
-| single-session-preference | 0.00 | 2 |
-| multi-session | 0.00 | 2 |
-| temporal-reasoning | 1.00 | 2 |
-| knowledge-update | 1.00 | 2 |
-| **Task-averaged** | **0.667** | — |
-| **Overall (micro)** | **0.667** | 12 |
+| single-session-user | 0.984 | 64 |
+| single-session-assistant | 0.929 | 56 |
+| temporal-reasoning | 0.866 | 127 |
+| knowledge-update | 0.847 | 72 |
+| multi-session | 0.744 | 121 |
+| single-session-preference | 0.533 | 30 |
 
-Spot-checked judgments were faithful: failures are genuine retrieval/answer misses
-(e.g. multi-session counting — gold 3 vs answered 2; preference — model failed to recall
-the user's stated Sony/Premiere-Pro setup), exactly what LongMemEval targets.
+(Per-type n excludes the 30 abstention questions, which are scored separately;
+64+56+127+72+121+30 + 30 abstention = 500.)
 
-## Finishing the full run (resumable, ~3.5–4M tokens)
+## Reading the results
 
-Once the MiniMax quota is restored (top-up/upgrade) or a working key is set in
-`~/.minimax_key`, one command resumes from the 412 saved answers — it backfills the
-remaining ~88 generations and judges all 500, skipping everything already done:
+- **Single-session recall is near-ceiling** (0.98 / 0.93): when the answer lives in one
+  session, our BM25 reliably surfaces it and MiniMax-M3 answers correctly. This is the
+  core value of Step 1 (retrieval & recall) and it lands.
+- **Multi-session (0.744)** is the main gap: these need *all* relevant sessions in the
+  top-k, and flat BM25's `recall_all@k` is the bottleneck (spot-checks showed genuine
+  miscounts from a missing session, not judging errors). This is exactly where a better
+  retriever / index expansion would help.
+- **Preference (0.533)** is hardest: the question rarely shares keywords with the persona
+  session, so BM25 misses it — a known weakness of lexical retrieval for preference recall.
+- **Abstention (0.833)** is healthy: the additive/fail-safe design (never hide, let the
+  model see it lacks evidence) does not push the model into over-confident hallucination.
+
+## Caveats
+
+- This measures **Step 1 (retrieval → QA)** on cross-session questions. It does **not**
+  measure Step 2's in-session topic-switch interference (covered by `eval/run_routing.py`).
+- Answerer and judge are the **same** model (MiniMax-M3), matching the budget constraint;
+  LongMemEval's reference judge is GPT-4o, so absolute numbers aren't 1:1 comparable to the
+  paper's leaderboard, but the methodology (prompts, metrics) is replicated verbatim.
+
+## Reproduce
 
 ```bash
 cd eval/longmemeval
-MINIMAX_MIN_INTERVAL=1.0 python3 run_phaseb.py all --config bm25 --topk 10 --workers 3
+MINIMAX_MIN_INTERVAL=1.2 python3 run_phaseb.py all --config bm25 --topk 10 --workers 3
 ```
 
-Then read the printed Task-averaged / Overall / Abstention metrics. Update this file with
-the full-500 numbers.
-
-> Note: keep `--workers` low and `MINIMAX_MIN_INTERVAL` ≥ 1.0s to avoid the per-minute
-> 429 storms seen at higher concurrency.
+Keep `--workers` low and `MINIMAX_MIN_INTERVAL` ≥ 1.0s to stay under MiniMax's per-minute
+quota. Artifacts: `results/hyp_bm25_k10_nall.jsonl` (answers),
+`results/eval_bm25_k10_nall.jsonl` (judgments).

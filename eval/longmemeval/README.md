@@ -61,4 +61,14 @@ and the printed metrics.
 
 ## Results
 
-See `RESULTS.md` (written after the full run).
+Full 500/500 run (bm25, topk=10, MiniMax-M3 answer + judge):
+
+| Metric | Score |
+|---|---|
+| Overall accuracy (micro, non-abstention, n=470) | **0.834** |
+| Task-averaged accuracy (mean of 6 types) | **0.817** |
+| Abstention accuracy (n=30) | **0.833** |
+
+Single-session recall is near-ceiling (0.98 / 0.93); the gaps are multi-session (0.744,
+needs all evidence sessions in top-k) and preference (0.533, lexical retrieval misses the
+persona session). See `RESULTS.md` for the per-type table and analysis.
