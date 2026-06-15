@@ -1,21 +1,79 @@
-# LongMemEval Phase B — Results
+# LongMemEval Phase B —— 结果
 
-**Config:** our BM25 session retrieval (`config=bm25`, `topk=10`) → answer with
-**MiniMax-M3** → judge with **MiniMax-M3** using the **verbatim official LongMemEval
-prompts** (per-type + abstention). **Dataset:** `LongMemEval_S` (500 questions,
-~115k-token haystack per question). **Complete: 500/500 generated and judged.**
+**配置：** 我们的 BM25 会话检索（`config=bm25`，`topk=10`）→ 用 **MiniMax-M3** 答题
+→ 用 **MiniMax-M3** 按**逐字的官方 LongMemEval prompt**（逐题型 + 弃答）评判。
+**数据集：** `LongMemEval_S`（500 道题，每题约 11.5 万 token 的 haystack）。
+**完成度：500/500 全部生成并评判。**
 
-## Headline
+## 头条数字
 
-| Metric | Score |
+| 指标 | 分数 |
 |---|---|
-| **Overall accuracy** (micro, non-abstention, n=470) | **0.834** |
-| **Task-averaged accuracy** (mean of 6 types) | **0.817** |
-| **Abstention accuracy** (n=30) | **0.833** |
+| **整体准确率**（micro，非弃答，n=470） | **0.834** |
+| **题型平均准确率**（6 种题型的均值） | **0.817** |
+| **弃答准确率**（n=30） | **0.833** |
 
-## Per question type
+## 与无记忆基线的对比
 
-| question_type | accuracy | n |
+为了把"记忆"本身的贡献单独拎出来，我们跑了一个**基线组**：同一个 MiniMax-M3 模型、
+**不提供任何历史会话**直接作答（`config=no-mem`，harness 给模型看到的历史就是
+"未找到相关历史"）。这是检索的**下界**——模型只能靠常识或猜测。
+
+| 指标 | 无记忆基线（no-mem） | 我们的 BM25（bm25, k=10） | 增益 |
+|---|---|---|---|
+| 整体准确率（micro，非弃答，n=470） | **0.040** | **0.834** | **+0.794** |
+| 题型平均准确率（6 种题型均值） | **0.058** | **0.817** | **+0.759** |
+| 弃答准确率（n=30） | **1.000** | **0.833** | **−0.167** |
+
+逐题型的基线对比：
+
+| question_type | 无记忆基线 | 我们的 BM25 | n |
+|---|---|---|---|
+| single-session-user | 0.016 | 0.984 | 64 |
+| single-session-assistant | 0.250 | 0.929 | 56 |
+| temporal-reasoning | 0.016 | 0.866 | 127 |
+| knowledge-update | 0.000 | 0.847 | 72 |
+| multi-session | 0.000 | 0.744 | 121 |
+| single-session-preference | 0.067 | 0.533 | 30 |
+
+读法：
+
+- **整体 +0.79、题型平均 +0.76**：没有记忆时模型几乎答不对（整体仅 0.040，逐题型多在
+  0–7% 之间瞎蒙），而接上我们的 BM25 检索后跳到 0.83。这就是记忆带来的净增益，也是
+  这套系统价值的直接量化。需要回看具体某次会话内容的题型（multi-session、
+  knowledge-update）在无记忆时直接归零，符合直觉。
+- **single-session-assistant 基线偏高（0.250）**：这类题里有一部分本质是常识/通用问答，
+  模型不看历史也能蒙对一些，所以基线不为零；但即便如此，加上记忆后仍从 0.25 提到 0.93。
+- **弃答反而是基线更高（1.000 vs 0.833）**：这符合预期且不矛盾——没有任何历史时，模型
+  对几乎所有问题都倾向于说"我不知道/信息不足"，于是在那 30 道*本就应该弃答*的题上全对；
+  但这种"无差别弃答"是以牺牲全部可答问题为代价的（整体仅 0.040）。我们的系统在保住
+  0.834 可答准确率的同时，弃答仍有 0.833，说明它没有被推向过度自信的幻觉——这正是
+  additive/fail-safe 设计想要的平衡。
+
+### 一个具体例子：记忆是怎么把分数提上去的
+
+拿 QID `118b2229`（single-session-user）举例，能看清增益的微观机制：
+
+- **问题：** "How long is my daily commute to work?"（我每天通勤多久？）
+- **标准答案：** 45 minutes each way（单程 45 分钟）
+- **这条事实只在一次"聊有声书推荐"的会话里被顺口提过一次：**
+  > user: "I've been listening to audiobooks during my daily commute, which takes 45 minutes each way."
+
+两种配置下的表现：
+
+| | 模型看到的历史 | 回答 | 判分 |
+|---|---|---|---|
+| 无记忆基线 | `(未找到相关历史)` | "我没有你通勤的任何信息……" | ✗ |
+| 我们的 BM25 | 把那次会话**检索到第 1 名** | "单程 45 分钟，每天约 1.5 小时……" | ✓ |
+
+关键在于：这条信息**埋在一个主题完全无关（有声书）的会话里**，只出现过一次。没有检索，
+它就永远沉在约 11.5 万 token 的 haystack 里捞不上来；而我们的主题分区 BM25 靠
+`commute` / `daily` / `work` 几个词把那次会话顶到第 1 名，模型立刻就答对了。这就是把整体
+准确率从 0.040 抬到 0.834 的那类增益，在单题尺度上的样子。
+
+## 逐题型
+
+| question_type | 准确率 | n |
 |---|---|---|
 | single-session-user | 0.984 | 64 |
 | single-session-assistant | 0.929 | 56 |
@@ -24,38 +82,40 @@ prompts** (per-type + abstention). **Dataset:** `LongMemEval_S` (500 questions,
 | multi-session | 0.744 | 121 |
 | single-session-preference | 0.533 | 30 |
 
-(Per-type n excludes the 30 abstention questions, which are scored separately;
-64+56+127+72+121+30 + 30 abstention = 500.)
+（逐题型的 n 不含那 30 道弃答题，弃答单独计分；
+64+56+127+72+121+30 + 30 道弃答 = 500。）
 
-## Reading the results
+## 结果解读
 
-- **Single-session recall is near-ceiling** (0.98 / 0.93): when the answer lives in one
-  session, our BM25 reliably surfaces it and MiniMax-M3 answers correctly. This is the
-  core value of Step 1 (retrieval & recall) and it lands.
-- **Multi-session (0.744)** is the main gap: these need *all* relevant sessions in the
-  top-k, and flat BM25's `recall_all@k` is the bottleneck (spot-checks showed genuine
-  miscounts from a missing session, not judging errors). This is exactly where a better
-  retriever / index expansion would help.
-- **Preference (0.533)** is hardest: the question rarely shares keywords with the persona
-  session, so BM25 misses it — a known weakness of lexical retrieval for preference recall.
-- **Abstention (0.833)** is healthy: the additive/fail-safe design (never hide, let the
-  model see it lacks evidence) does not push the model into over-confident hallucination.
+- **单会话召回接近天花板**（0.98 / 0.93）：当答案就在某一个会话里时，我们的 BM25
+  能稳定地把它捞出来，MiniMax-M3 也能答对。这是第 1 步（检索与召回）的核心价值，
+  而且它确实兑现了。
+- **多会话（0.744）**是主要差距：这类题需要*所有*相关会话都进 top-k，而扁平 BM25 的
+  `recall_all@k` 是瓶颈（抽查表明确实是漏了某个会话导致的真实计数错误，而非评判错误）。
+  这恰恰是更好的检索器 / 索引扩展能帮上忙的地方。
+- **偏好（0.533）**最难：问题很少和 persona 会话共享关键词，所以 BM25 会漏掉它——
+  这是词法检索在偏好召回上的已知弱点。
+- **弃答（0.833）**是健康的：additive/fail-safe 的设计（永不隐藏、让模型自己看到证据
+  不足）并没有把模型推向过度自信的幻觉。
 
-## Caveats
+## 注意事项
 
-- This measures **Step 1 (retrieval → QA)** on cross-session questions. It does **not**
-  measure Step 2's in-session topic-switch interference (covered by `eval/run_routing.py`).
-- Answerer and judge are the **same** model (MiniMax-M3), matching the budget constraint;
-  LongMemEval's reference judge is GPT-4o, so absolute numbers aren't 1:1 comparable to the
-  paper's leaderboard, but the methodology (prompts, metrics) is replicated verbatim.
+- 这衡量的是**第 1 步（检索 → QA）**在跨会话问题上的表现。它**不**衡量第 2 步的
+  会话内话题切换干扰（那部分由 `eval/run_routing.py` 覆盖）。
+- 答题与评判用的是**同一个**模型（MiniMax-M3），这是受预算约束所致；LongMemEval 的
+  参考评判模型是 GPT-4o，所以绝对数字和论文榜单不是 1:1 可比的，但方法论
+  （prompt、指标）是逐字复现的。
 
-## Reproduce
+## 复现
 
 ```bash
 cd eval/longmemeval
-MINIMAX_MIN_INTERVAL=1.2 python3 run_phaseb.py all --config bm25 --topk 10 --workers 3
+# 我们的系统（带 BM25 记忆）
+MINIMAX_MIN_INTERVAL=1.2 python3 run_phaseb.py all --config bm25   --topk 10 --workers 3
+# 无记忆基线
+MINIMAX_MIN_INTERVAL=1.2 python3 run_phaseb.py all --config no-mem --topk 10 --workers 3
 ```
 
-Keep `--workers` low and `MINIMAX_MIN_INTERVAL` ≥ 1.0s to stay under MiniMax's per-minute
-quota. Artifacts: `results/hyp_bm25_k10_nall.jsonl` (answers),
-`results/eval_bm25_k10_nall.jsonl` (judgments).
+把 `--workers` 调低、`MINIMAX_MIN_INTERVAL` 保持 ≥ 1.0s，以免超出 MiniMax 的每分钟
+配额。产物：`results/hyp_bm25_k10_nall.jsonl`（答案）、
+`results/eval_bm25_k10_nall.jsonl`（评判结果），以及对应的 `no-mem_*` 基线文件。
