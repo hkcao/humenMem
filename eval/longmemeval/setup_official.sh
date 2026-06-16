@@ -28,6 +28,8 @@ else
     && echo "Applied official_patches.diff to vendor/LongMemEval"
 fi
 
-# Python deps for the LongMemEval reader+judge path (light; no torch/transformers).
+# Python venv + deps for the LongMemEval reader+judge path (light; no torch/transformers).
+[ -d "$REPO/.venv" ] || python3 -m venv "$REPO/.venv"
+"$REPO/.venv/bin/pip" install -q --upgrade pip
 "$REPO/.venv/bin/pip" install -q openai tiktoken backoff numpy
 echo "Setup complete. See README.md for run commands."

@@ -26,6 +26,49 @@
 第 3 步 —— 软隔离（切换话题时把跑题内容折叠进打标签的摘要里）。第 4 步 —— 真正的
 硬淘汰（需要通过 Agent SDK / 自定义 harness 来掌控消息数组本身）。
 
+## 快速开始 —— 在 agent 里集成
+
+记忆引擎是**纯 Python、零依赖**，存储默认在 `~/.claude/hank_memory/`（用 `HANK_MEMORY_DIR`
+覆盖）。集成有两条腿，可单独用也可一起用：
+
+**A. Skill（模型按需召回/写入）** —— 把这三样拷进你的 Claude Code 项目：
+```bash
+cp -r theme_memory/                       <你的项目>/theme_memory/
+cp -r .claude/skills/theme-memory/        <你的项目>/.claude/skills/theme-memory/
+```
+之后 agent 会在"用户提到之前聊过的东西 / 切换话题 / 问当前窗口外的上下文"时自动触发
+skill，调用四个工具：
+```bash
+python3 theme_memory/cli.py overview                              # 索引 + 各话题摘要（summary-first）
+python3 theme_memory/cli.py retrieve --query "staging 数据库 host" --limit 5   # BM25 跨话题召回
+python3 theme_memory/cli.py append --topic deploy-prod --source user \
+  --content "Prod DB host 是 db-prod.internal:5432" --desc "生产部署配置"     # 持久化一条事实
+python3 theme_memory/cli.py summarize --topic deploy-prod         # 刷新该话题摘要
+```
+这一步**只追加上下文、从不删除**，所以召回永远安全（fail-safe）。
+
+**B. Hook（每轮自动注入话题状态）** —— 拷 hook 并在 `.claude/settings.json` 注册：
+```bash
+cp -r hooks/                              <你的项目>/hooks/
+```
+```jsonc
+// .claude/settings.json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command",
+        "command": "python3 \"$CLAUDE_PROJECT_DIR/hooks/inject_topic_state.py\"" } ] }
+    ]
+  }
+}
+```
+每轮提交前，hook 会注入**当前话题锚点 + 每个已知话题的一行标签 + 一条"别张冠李戴"的
+提醒**；路由是粘性且 fail-safe 的（所有话题始终列出）。hook 出任何错都静默退出（exit 0），
+绝不会挡住或破坏用户的 prompt。
+
+> 不用 Claude Code 也能集成：直接把 `theme_memory/cli.py` 当子进程调，或 `import
+> retrieve` / `topic_state` 在你自己的 harness 里用——两者都是普通 Python 模块。
+
 ## 评测 —— LongMemEval（官方 harness）
 
 在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 道题）上做端到端 QA。
@@ -33,6 +76,23 @@
 弃答 verbatim prompt），我们的 theme-memory BM25 按官方 `retrieval_results` 契约插进去；
 读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样数字才能和 LongMemEval 榜单、以及
 mem0 等框架横向对比。跑法见 [`eval/longmemeval/README_official.md`](eval/longmemeval/README_official.md)。
+
+**快速开始（跑评测）：**
+```bash
+cd eval/longmemeval
+bash setup_official.sh                       # clone 官方仓库(pinned) + 打 MiniMax 补丁 + 建 .venv 装依赖
+echo "sk-..." > ~/.minimax_key && chmod 600 ~/.minimax_key
+# 数据（gitignored，约 292MB）：
+curl -sL -o data/longmemeval_s_cleaned.json https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+curl -sL -o data/longmemeval_oracle.json    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
+
+bash run_official.sh ours 12 strat           # 冒烟：我们的 BM25，12 题分层
+bash run_official.sh ours                     # 完整 500：我们的 BM25（headline）
+bash run_official.sh no-mem                    # 基线下界
+# 只看检索质量 + 错因归因（不花 API）：
+python3 bm25_to_official.py --out official_out/retr.jsonl --retriever ours --limit 60 --stratified
+```
+mem0 横向对比的快速开始见 [`README_mem0.md`](eval/longmemeval/README_mem0.md)。
 
 四个 config 一键跑（`bash run_official.sh CONFIG`）：
 
