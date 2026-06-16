@@ -1,5 +1,11 @@
 # LongMemEval —— theme-memory 的 Phase B（端到端 QA）
 
+> ⚠️ **已被取代（保留作参考）。** 本文档描述的是早期的**手写复刻** harness
+> （`harness.py` / `run_phaseb.py`，逐字复刻官方 prompt 但流程是自建的）。现在的
+> **规范跑法是直接复用官方 LongMemEval `src/`**——见 [`README_official.md`](README_official.md)；
+> mem0 横向对比见 [`README_mem0.md`](README_mem0.md)。下面 0.834 等数字来自这套旧 harness，
+> 官方 harness 下的完整数字以 `README_official.md` / `RESULTS.md` 为准。
+
 在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval) 基准上评测 theme-memory 的
 **检索/召回引擎**，按 **LongMemEval 官方方式**评判（逐题型 / 弃答的 verbatim 评判
 prompt），用 **MiniMax-M3** 同时作为答题与评判模型。

@@ -26,29 +26,39 @@
 第 3 步 —— 软隔离（切换话题时把跑题内容折叠进打标签的摘要里）。第 4 步 —— 真正的
 硬淘汰（需要通过 Agent SDK / 自定义 harness 来掌控消息数组本身）。
 
-## 评测 —— LongMemEval Phase B
+## 评测 —— LongMemEval（官方 harness）
 
-在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 道题）上做端到端
-QA，按**官方方式**评判（逐题型 verbatim prompt + 弃答 prompt），用 **MiniMax-M3**
-同时作为答题模型和评判模型。我们的 BM25 检索（topk=10）：
+在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 道题）上做端到端 QA。
+**规范跑法是直接复用官方 `src/` harness**（`run_generation` + `evaluate_qa`，逐题型 /
+弃答 verbatim prompt），我们的 theme-memory BM25 按官方 `retrieval_results` 契约插进去；
+读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样数字才能和 LongMemEval 榜单、以及
+mem0 等框架横向对比。跑法见 [`eval/longmemeval/README_official.md`](eval/longmemeval/README_official.md)。
 
-| 指标 | 分数 |
-|---|---|
-| 整体准确率（micro，非弃答，n=470） | **0.834** |
-| 题型平均（6 种题型的均值） | **0.817** |
-| 弃答准确率（n=30） | **0.833** |
+四个 config 一键跑（`bash run_official.sh CONFIG`）：
 
-单会话召回接近天花板（0.98 / 0.93）；差距出在多会话（0.744）和偏好（0.533）。
-完整的逐题型表格、分析与复现方法见
-[`eval/longmemeval/README.md`](eval/longmemeval/README.md) 和
-[`eval/longmemeval/RESULTS.md`](eval/longmemeval/RESULTS.md)。
+- **ours** —— 我们的 BM25 在真实 ~115k-token haystack 上取 top-10 session。
+- **no-mem** —— 官方 `no-retrieval`：prompt 为**裸问题**，无任何历史、无 "no relevant
+  history" 框架（与官方闭卷跑法一致）。检索下界。
+- **oracle** —— evidence-only haystack，完美检索上界。
+- **official-bm25** —— 官方 `rank_bm25` 基线。
 
-### 对比基线（无记忆）
+**错因归因**：检索适配器每题落一份 `*.trace.jsonl`，记录每个证据 session 的排名、
+recall@k 与 `failure_stage`（`retrieval_ok` / `retrieval_miss` / …），答错时一眼区分
+**检索没捞到** vs **生成没用好**。
 
-为了量化记忆带来的增益，我们加入一个**基线组**：用同一个 MiniMax-M3 模型、**不提供
-任何历史会话**直接作答（`config=no-mem`，即 harness 给模型的历史是"未找到相关历史"）。
-这是检索的下界——模型只能靠常识/猜测，无法回看任何会话。完整数字见
-[`eval/longmemeval/RESULTS.md`](eval/longmemeval/RESULTS.md)。
+> 早期用过一套**手写复刻**的 harness（`harness.py` / `run_phaseb.py`，逐字复刻官方
+> prompt 但流程自建），跑出过 整体 0.834 / 题型平均 0.817 / 弃答 0.833。现已被官方
+> harness 取代——历史结果与说明见
+> [`eval/longmemeval/README.md`](eval/longmemeval/README.md) 和
+> [`RESULTS.md`](eval/longmemeval/RESULTS.md)。
+
+### mem0 横向对比（官方 harness + MiniMax）
+
+用 **mem0 自己的官方 LongMemEval 评测**（[`memory-benchmarks`](https://github.com/mem0ai/memory-benchmarks)，
+即其 README 0.9+ 同一套），把 LLM 换成 MiniMax-M3、embedder 用本地 all-MiniLM——看在我们
+模型下 mem0 能到多少，与我们的 BM25 做"各自官方 harness、同模型同题库"的系统级对照。跑法
+（含一个绕开 Docker 的本地 REST 桥 `mem0_shim.py`，后端是官方 `mem0.Memory` 库）见
+[`eval/longmemeval/README_mem0.md`](eval/longmemeval/README_mem0.md)。
 
 > 为什么选 LongMemEval 而非 LOCOMO：它有逐题的证据标注、一个可控的干扰项 haystack
 > （让选择性召回真正起作用），以及专门的知识更新 / 弃答类别——这些恰好对应到我们的
@@ -57,10 +67,17 @@ QA，按**官方方式**评判（逐题型 verbatim prompt + 弃答 prompt），
 ## 目录结构
 
 ```
-theme_memory/            第 1 步存储 + BM25 + CLI；第 2 步 topic_state
-hooks/                   UserPromptSubmit 注入 hook
-.claude/                 skill + settings.json（hook 注册）
-eval/run_recall.py       第 1 步 recall@k 验证
-eval/run_routing.py      第 2 步路由 + fail-safe 验证
-eval/longmemeval/        LongMemEval Phase B harness、结果、文档
+theme_memory/                      第 1 步存储 + BM25 + CLI；第 2 步 topic_state
+hooks/                             UserPromptSubmit 注入 hook
+.claude/                           skill + settings.json（hook 注册）
+eval/run_recall.py                 第 1 步 recall@k 验证
+eval/run_routing.py                第 2 步路由 + fail-safe 验证
+eval/longmemeval/
+  setup_official.sh                clone 官方仓库（pinned）+ 打 MiniMax 补丁 + 装依赖
+  bm25_to_official.py              BM25 → 官方 retrieval_results + 错因归因 trace
+  run_official.sh                  ours / no-mem / oracle / official-bm25 一键跑
+  official_patches.diff            对官方脚本的最小 MiniMax 适配
+  mem0_shim.py / run_mem0.sh       mem0 官方 eval（MiniMax）的本地 REST 桥 + 跑法
+  README_official.md / README_mem0.md   官方 harness 跑法文档
+  harness.py / run_phaseb.py       （已取代）早期手写复刻 harness
 ```
