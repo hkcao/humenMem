@@ -1,0 +1,104 @@
+diff --git a/src/evaluation/evaluate_qa.py b/src/evaluation/evaluate_qa.py
+index 4732f37..17e19c0 100644
+--- a/src/evaluation/evaluate_qa.py
++++ b/src/evaluation/evaluate_qa.py
+@@ -12,8 +12,18 @@ model_zoo = {
+     'llama-3.1-70b-instruct': ('meta-llama/Meta-Llama-3.1-70B-Instruct', 'local'),
+     'gpt-4o-mini': ('gpt-4o-mini-2024-07-18', 'openai'),
+     'gpt-4o': ('gpt-4o-2024-08-06', 'openai'),
++    # NOTE(humanMem): MiniMax via OpenAI-compatible endpoint. source='openai' -> base_url
++    # falls back to OPENAI_BASE_URL env (set to https://api.minimaxi.com/v1).
++    'minimax-m3': ('MiniMax-M3', 'openai'),
+ }
+ 
++import re as _re  # NOTE(humanMem)
++_THINK = _re.compile(r"<think>.*?</think>", _re.DOTALL)
++
++
++def _strip_think(text):
++    return _THINK.sub("", text or "").strip()
++
+ 
+ @backoff.on_exception(backoff.expo, (openai.RateLimitError,
+                                     openai.APIError))
+@@ -99,6 +109,9 @@ if __name__ == '__main__':
+             hyp = entry['hypothesis']
+             
+             prompt = get_anscheck_prompt(qtype, q, ans, hyp, abstention='_abs' in entry['question_id'])
++            # NOTE(humanMem): reasoning models (MiniMax-M3) need room to finish <think>
++            # before the yes/no; official non-reasoning default is 10.
++            is_reasoning = 'minimax' in metric_model.lower()
+             kwargs = {
+                 'model': metric_model,
+                 'messages':[
+@@ -106,10 +119,10 @@ if __name__ == '__main__':
+                 ],
+                 'n': 1,
+                 'temperature': 0,
+-                'max_tokens': 10
++                'max_tokens': 2048 if is_reasoning else 10
+             }
+             completion = chat_completions_with_backoff(metric_client, **kwargs)
+-            eval_response = completion.choices[0].message.content.strip()
++            eval_response = _strip_think(completion.choices[0].message.content)  # NOTE(humanMem)
+             label = 'yes' in eval_response.lower()
+             entry['autoeval_label'] = {
+                 'model': metric_model,
+diff --git a/src/generation/run_generation.py b/src/generation/run_generation.py
+index 8e9e0f2..9c27a83 100644
+--- a/src/generation/run_generation.py
++++ b/src/generation/run_generation.py
+@@ -8,8 +8,7 @@ import random
+ import numpy as np
+ from datetime import datetime, timedelta
+ import argparse
+-from transformers import AutoTokenizer
+-import tiktoken
++import tiktoken  # NOTE(humanMem): transformers imported lazily below so non-HF models (MiniMax) need no torch
+ 
+ 
+ def parse_args():
+@@ -282,7 +281,15 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
+     return prompt
+     
+ 
+-@backoff.on_exception(backoff.constant, (openai.RateLimitError), 
++import re as _re  # NOTE(humanMem)
++_THINK = _re.compile(r"<think>.*?</think>", _re.DOTALL)  # MiniMax-M3 reasoning block
++
++
++def _strip_think(text):  # NOTE(humanMem): MiniMax-M3 emits <think>..</think>; keep only the answer
++    return _THINK.sub("", text or "").strip()
++
++
++@backoff.on_exception(backoff.constant, (openai.RateLimitError),
+                       interval=5)
+ def chat_completions_with_backoff(client, **kwargs):
+     return client.chat.completions.create(**kwargs)
+@@ -325,11 +332,12 @@ def main(args):
+         'mistral-7b-instruct-v0.3': 32000,
+         'In2Training/FILM-7B': 32000,
+     }
+-    model_max_length = model2maxlength[args.model_name]
+-    if 'gpt-4' in args.model_name.lower()  or 'gpt-3.5' in args.model_name.lower():
+-        tokenizer = tiktoken.get_encoding('o200k_base')
++    model_max_length = model2maxlength.get(args.model_name, 128000)  # NOTE(humanMem): default 128k for unlisted models (MiniMax)
++    if 'gpt-4' in args.model_name.lower() or 'gpt-3.5' in args.model_name.lower() or 'minimax' in args.model_name.lower():
++        tokenizer = tiktoken.get_encoding('o200k_base')  # NOTE(humanMem): MiniMax uses tiktoken for length budgeting (approx); avoids HF/torch
+         tokenizer_backend = 'openai'
+     else:
++        from transformers import AutoTokenizer  # lazy: only HF models pay this import
+         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+         tokenizer_backend = 'huggingface'
+ 
+@@ -366,8 +374,8 @@ def main(args):
+                 'temperature': 0,
+                 'max_tokens': gen_length,
+             }
+-            completion = chat_completions_with_backoff(client,**kwargs) 
+-            answer = completion.choices[0].message.content.strip()
++            completion = chat_completions_with_backoff(client,**kwargs)
++            answer = _strip_think(completion.choices[0].message.content)  # NOTE(humanMem)
+ 
+             total_prompt_tokens += completion.usage.prompt_tokens
+             total_completion_tokens += completion.usage.completion_tokens

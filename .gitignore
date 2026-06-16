@@ -29,3 +29,7 @@ eval/longmemeval/results/*.log
 
 # macOS junk
 .DS_Store
+
+# Vendored official harnesses (cloned + patched by eval/longmemeval/setup_official.sh)
+vendor/
+eval/longmemeval/official_out/
