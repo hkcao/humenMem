@@ -90,4 +90,19 @@ LongMemEval 官方 src——两者同模型(MiniMax)、同题库、同准确率�
 
 ## 结果
 
-完整 500 题结果（official harness，MiniMax-M3 读题+评判）见 `official_out/`；汇总表待跑完补入。
+完整 LongMemEval_S 结果，**官方 harness，MiniMax-M3 读题+评判**（产物见 `official_out/`）。
+检索质量：recall_any@10=**0.968**、recall_all@10=**0.882**（n=500，非弃答）。
+`ours` 实际评测 **N=497**（生成阶段 3 题异常跳过；总准确率按 497 为分母）。
+
+| 题型 | **ours**（BM25 top-10） | no-mem（裸问题下界） |
+|---|---|---|
+| single-session-user | 100.0% (70) | 8.6% (70) |
+| single-session-assistant | 92.9% (56) | 32.1% (56) |
+| single-session-preference | 44.4% (27) | 20.0% (30) |
+| multi-session | 72.2% (133) | 9.8% (133) |
+| knowledge-update | 87.2% (78) | 10.3% (78) |
+| temporal-reasoning | 84.2% (133) | 4.5% (133) |
+| **总体** | **82.5%** (410/497) | **11.4%** (57/500) |
+
+`ours` 较纯模型下界提升约 **7 倍**。短板在 `single-session-preference`（44.4%）——
+偏好类问题答案主观、judge 偏严；`multi-session`（72.2%）则受多跳证据聚合所限。

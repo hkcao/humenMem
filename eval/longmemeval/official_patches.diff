@@ -45,7 +45,7 @@ index 4732f37..17e19c0 100644
              entry['autoeval_label'] = {
                  'model': metric_model,
 diff --git a/src/generation/run_generation.py b/src/generation/run_generation.py
-index 8e9e0f2..9c27a83 100644
+index 8e9e0f2..0cd2bea 100644
 --- a/src/generation/run_generation.py
 +++ b/src/generation/run_generation.py
 @@ -8,8 +8,7 @@ import random
@@ -58,11 +58,12 @@ index 8e9e0f2..9c27a83 100644
  
  
  def parse_args():
-@@ -282,7 +281,15 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
+@@ -282,8 +281,22 @@ def prepare_prompt(entry, retriever_type, topk_context: int, useronly: bool, his
      return prompt
      
  
 -@backoff.on_exception(backoff.constant, (openai.RateLimitError), 
+-                      interval=5)
 +import re as _re  # NOTE(humanMem)
 +_THINK = _re.compile(r"<think>.*?</think>", _re.DOTALL)  # MiniMax-M3 reasoning block
 +
@@ -71,11 +72,28 @@ index 8e9e0f2..9c27a83 100644
 +    return _THINK.sub("", text or "").strip()
 +
 +
-+@backoff.on_exception(backoff.constant, (openai.RateLimitError),
-                       interval=5)
++# NOTE(humanMem): official only retried RateLimitError, so transient connection drops
++# (seen when hammering the API) silently skipped questions (no hypothesis written). Retry
++# connection/timeout/5xx too, with a bounded expo backoff.
++@backoff.on_exception(
++    backoff.expo,
++    (openai.RateLimitError, openai.APIConnectionError, openai.APITimeoutError,
++     openai.InternalServerError),
++    max_tries=8, max_time=300)
  def chat_completions_with_backoff(client, **kwargs):
      return client.chat.completions.create(**kwargs)
-@@ -325,11 +332,12 @@ def main(args):
+ 
+@@ -295,6 +308,9 @@ def main(args):
+     client = OpenAI(
+         api_key=args.openai_key,
+         base_url=args.openai_base_url,
++        # NOTE(humanMem): bound each request so a dropped/half-open connection raises
++        # APITimeoutError (caught by the backoff above) instead of hanging forever.
++        timeout=300.0,
+     )
+ 
+     try:
+@@ -325,11 +341,12 @@ def main(args):
          'mistral-7b-instruct-v0.3': 32000,
          'In2Training/FILM-7B': 32000,
      }
@@ -91,7 +109,7 @@ index 8e9e0f2..9c27a83 100644
          tokenizer = AutoTokenizer.from_pretrained(args.model_name)
          tokenizer_backend = 'huggingface'
  
-@@ -366,8 +374,8 @@ def main(args):
+@@ -366,8 +383,8 @@ def main(args):
                  'temperature': 0,
                  'max_tokens': gen_length,
              }
