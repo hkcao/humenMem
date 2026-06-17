@@ -2,9 +2,12 @@
 
 在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 题，每题 ~115k-token
 haystack）上端到端 QA，**全程复用官方 harness**：检索日志喂给官方 `run_generation.py`
-读题、官方 `evaluate_qa.py` 逐题型/弃答评判。我们的 theme-memory BM25 按官方
-`retrieval_results` 契约插进去；读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样
-数字才能和 LongMemEval 榜单、以及 mem0 等框架横向对比。
+读题、官方 `evaluate_qa.py` 逐题型/弃答评判。我们的记忆检索按官方 `retrieval_results`
+契约插进去；读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样数字才能和 LongMemEval
+榜单、以及 mem0 等框架横向对比。
+
+> ⚠️ 注意 `ours` 配置目前是 **theme-memory 的 BM25 引擎单跑 session 级召回**（主题层未启用），
+> 属对照基线；theme-memory 完整方案的评测见文末「theme-memory 真方案」一节。
 
 > 官方仓库（`vendor/LongMemEval`、`vendor/memory-benchmarks`）由 `setup_official.sh`
 > 按 pinned commit clone 并打补丁，已 gitignore。
@@ -18,8 +21,8 @@ echo "sk-..." > ~/.minimax_key && chmod 600 ~/.minimax_key
 curl -sL -o data/longmemeval_s_cleaned.json https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
 curl -sL -o data/longmemeval_oracle.json    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
 
-bash run_official.sh ours 12 strat        # 冒烟：我们的 BM25，12 题分层
-bash run_official.sh ours                  # 完整 500：我们的记忆方案（headline）
+bash run_official.sh ours 12 strat        # 冒烟：BM25 session 检索基线，12 题分层
+bash run_official.sh ours                  # 完整 500：BM25 session 检索（对照基线）
 bash run_official.sh no-mem                 # 纯模型基线（下界）
 ```
 
@@ -27,7 +30,7 @@ bash run_official.sh no-mem                 # 纯模型基线（下界）
 
 | config | 含义 |
 |---|---|
-| **ours** | 我们的 BM25 在真实 ~115k haystack 上取 top-10 session（`flat-session`） |
+| **ours** | BM25 引擎在真实 ~115k haystack 上取 top-10 session（`flat-session`）——**主题层未启用，属对照基线** |
 | **no-mem** | 官方 `no-retrieval`：prompt 为**裸问题**，无任何历史框架——纯模型下界 |
 | **oracle** | evidence-only haystack，完美检索上界 |
 | **official-bm25** | 官方 `rank_bm25` 基线（需 `pip install rank_bm25`） |
@@ -90,11 +93,17 @@ LongMemEval 官方 src——两者同模型(MiniMax)、同题库、同准确率�
 
 ## 结果
 
+> ⚠️ **口径声明**：下表的 `ours` 配置**不是** theme-memory 完整方案，而是它的
+> **BM25 检索引擎单独跑 session 级召回**——`bm25_to_official.py` 里 topic 字段写死为空，
+> 主题路由 / 主题状态注入 / 按主题存储与摘要（`topic_state.py`、`store.py`）**全部未参与**。
+> 所以它只能算 **BM25 session 检索基线（对照组）**，与 no-mem 一样是对照。
+> theme-memory **真方案**的端到端结果见下面「theme-memory 真方案」一节（独立实验）。
+
 完整 LongMemEval_S 结果，**官方 harness，MiniMax-M3 读题+评判**（产物见 `official_out/`）。
 检索质量：recall_any@10=**0.968**、recall_all@10=**0.882**（n=500，非弃答）。
-`ours` 实际评测 **N=497**（生成阶段 3 题异常跳过；总准确率按 497 为分母）。
+BM25 基线实际评测 **N=497**（生成阶段 3 题异常跳过；总准确率按 497 为分母）。
 
-| 题型 | **ours**（BM25 top-10） | no-mem（裸问题下界） |
+| 题型 | **BM25 session 检索**（对照） | no-mem（裸问题下界） |
 |---|---|---|
 | single-session-user | 100.0% (70) | 8.6% (70) |
 | single-session-assistant | 92.9% (56) | 32.1% (56) |
@@ -104,5 +113,11 @@ LongMemEval 官方 src——两者同模型(MiniMax)、同题库、同准确率�
 | temporal-reasoning | 84.2% (133) | 4.5% (133) |
 | **总体** | **82.5%** (410/497) | **11.4%** (57/500) |
 
-`ours` 较纯模型下界提升约 **7 倍**。短板在 `single-session-preference`（44.4%）——
+BM25 基线较纯模型下界提升约 **7 倍**。短板在 `single-session-preference`（44.4%）——
 偏好类问题答案主观、judge 偏严；`multi-session`（72.2%）则受多跳证据聚合所限。
+
+## theme-memory 真方案（端到端）
+
+> 🚧 进行中。这一节才是 theme-memory 设计方案的真实评测：按时间顺序把每题 haystack
+> **灌进 `theme_memory` 引擎**（LLM 做主题路由 + 抽取入库），查询时经主题状态/主题召回
+> 取上下文喂给官方读题模型。结果待跑完补入；与上面的 BM25 基线、no-mem、mem0 同模型同题库对照。

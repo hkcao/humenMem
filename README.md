@@ -74,9 +74,13 @@ cp -r hooks/                              <你的项目>/hooks/
 
 在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 道题）上做端到端 QA。
 **规范跑法是直接复用官方 `src/` harness**（`run_generation` + `evaluate_qa`，逐题型 /
-弃答 verbatim prompt），我们的 theme-memory BM25 按官方 `retrieval_results` 契约插进去；
+弃答 verbatim prompt），我们的记忆检索按官方 `retrieval_results` 契约插进去；
 读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样数字才能和 LongMemEval 榜单、以及
 mem0 等框架横向对比。跑法见 [`eval/longmemeval/README.md`](eval/longmemeval/README.md)。
+
+> ⚠️ `ours` 配置目前是 **theme-memory 的 BM25 引擎单跑 session 级召回**（主题层未启用），
+> 是**对照基线**；theme-memory 完整方案（主题路由 + 入库 + 主题召回）的端到端评测见
+> [`eval/longmemeval/README.md`](eval/longmemeval/README.md) 的「theme-memory 真方案」一节。
 
 **快速开始（跑评测）：**
 ```bash
@@ -87,8 +91,8 @@ echo "sk-..." > ~/.minimax_key && chmod 600 ~/.minimax_key
 curl -sL -o data/longmemeval_s_cleaned.json https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
 curl -sL -o data/longmemeval_oracle.json    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
 
-bash run_official.sh ours 12 strat           # 冒烟：我们的 BM25，12 题分层
-bash run_official.sh ours                     # 完整 500：我们的 BM25（headline）
+bash run_official.sh ours 12 strat           # 冒烟：BM25 session 检索基线，12 题分层
+bash run_official.sh ours                     # 完整 500：BM25 session 检索（对照基线）
 bash run_official.sh no-mem                    # 基线下界
 # 只看检索质量 + 错因归因（不花 API）：
 python3 bm25_to_official.py --out official_out/retr.jsonl --retriever ours --limit 60 --stratified
@@ -97,7 +101,7 @@ mem0 横向对比的快速开始见 [`README_mem0.md`](eval/longmemeval/README_m
 
 四个 config 一键跑（`bash run_official.sh CONFIG`）：
 
-- **ours** —— 我们的 BM25 在真实 ~115k-token haystack 上取 top-10 session。
+- **ours** —— BM25 引擎在真实 ~115k-token haystack 上取 top-10 session（**主题层未启用，对照基线**）。
 - **no-mem** —— 官方 `no-retrieval`：prompt 为**裸问题**，无任何历史、无 "no relevant
   history" 框架（与官方闭卷跑法一致）。检索下界。
 - **oracle** —— evidence-only haystack，完美检索上界。
