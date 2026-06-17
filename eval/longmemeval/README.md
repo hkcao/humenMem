@@ -1,75 +1,93 @@
-# LongMemEval —— theme-memory 的 Phase B（端到端 QA）
+# LongMemEval 评测
 
-> ⚠️ **已被取代（保留作参考）。** 本文档描述的是早期的**手写复刻** harness
-> （`harness.py` / `run_phaseb.py`，逐字复刻官方 prompt 但流程是自建的）。现在的
-> **规范跑法是直接复用官方 LongMemEval `src/`**——见 [`README_official.md`](README_official.md)；
-> mem0 横向对比见 [`README_mem0.md`](README_mem0.md)。下面 0.834 等数字来自这套旧 harness，
-> 官方 harness 下的完整数字以 `README_official.md` / `RESULTS.md` 为准。
+在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 题，每题 ~115k-token
+haystack）上端到端 QA，**全程复用官方 harness**：检索日志喂给官方 `run_generation.py`
+读题、官方 `evaluate_qa.py` 逐题型/弃答评判。我们的 theme-memory BM25 按官方
+`retrieval_results` 契约插进去；读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样
+数字才能和 LongMemEval 榜单、以及 mem0 等框架横向对比。
 
-在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval) 基准上评测 theme-memory 的
-**检索/召回引擎**，按 **LongMemEval 官方方式**评判（逐题型 / 弃答的 verbatim 评判
-prompt），用 **MiniMax-M3** 同时作为答题与评判模型。
+> 官方仓库（`vendor/LongMemEval`、`vendor/memory-benchmarks`）由 `setup_official.sh`
+> 按 pinned commit clone 并打补丁，已 gitignore。
 
-## 为什么选 LongMemEval（而非 LOCOMO）
-
-LongMemEval 在设计时就针对性地修复了 LOCOMO 在记忆评测上的弱点：它有逐题的**证据
-标注**、一个**可控的干扰项 haystack**（让选择性召回真正起作用），以及专门的**知识
-更新**和**弃答**类别——这些直接对应到我们的检索指标和我们最大的可靠性风险点。
-
-## 它衡量什么（以及不衡量什么）
-
-- **衡量：** 我们的 BM25 召回（`theme_memory/retrieve.py`）能否把回答跨会话问题所需
-  的正确会话捞出来，以及这在官方评判下如何转化为 QA 准确率。这就是**第 1 步（检索与
-  召回）**的价值。
-- **不衡量：** 第 2 步的会话内话题切换干扰（这些是跨会话 QA 任务，不是单窗口内的话题
-  切换）。那部分由 `eval/run_routing.py` 覆盖。
-
-## 忠实复现说明
-
-- **评判 prompt**（`harness.py`）：逐字取自 LongMemEval 的 `get_anscheck_prompt`，
-  含逐题型变体——标准 / 时间推理（容忍 off-by-one）/ 知识更新 / 偏好（rubric）——
-  弃答则由 `question_id` 里的 `_abs` 选中。标签 = `"yes" in response.lower()`
-  （在剥掉 MiniMax-M3 的 `<think>` 块之后）。
-- **答题 prompt**（`harness.py`）：逐字取自非 CoT 的"direct"阅读模板，采用
-  `### Session i / Session Date / Session Content` 的历史块格式。
-- **检索：** 会话粒度；每个会话文档 = 它的**用户**轮次（匹配官方的扁平索引）。
-  按**我们的** BM25（`theme_memory.retrieve.bm25`）排序；会话 id（其中编码了
-  `answer`/`noans`）被排除在打分文本之外，以免泄露 ground truth。
-- **指标**（`run_phaseb.py`）：**题型平均**（逐题型准确率的均值）、**整体**（非弃答
-  上的 micro）、**弃答准确率**——与 `print_qa_metrics.py` 一致。
-
-## 复现
+## 快速开始
 
 ```bash
-# 1. 数据（已 gitignore；约 292MB）—— 首次运行自动下载，或手动：
-#    curl -sL -o data/longmemeval_oracle.json      https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
-#    curl -sL -o data/longmemeval_s_cleaned.json   https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+bash setup_official.sh                    # clone 官方仓库(pinned) + 打 MiniMax 补丁 + 建 .venv 装依赖
+echo "sk-..." > ~/.minimax_key && chmod 600 ~/.minimax_key
+# 数据（gitignored，~292MB）
+curl -sL -o data/longmemeval_s_cleaned.json https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
+curl -sL -o data/longmemeval_oracle.json    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
 
-# 2. API key（保存在仓库之外）
-echo "sk-cp-..." > ~/.minimax_key && chmod 600 ~/.minimax_key   # MiniMax CN，模型 MiniMax-M3
-
-# 3. 快速冒烟测试（12 道题，按题型均衡抽样）
-python3 run_phaseb.py all --config bm25 --topk 10 --limit 12 --stratified
-
-# 4. 完整基准（500 道题）
-python3 run_phaseb.py all --config bm25 --topk 10 --workers 8
-
-# config 取值：bm25（我们的检索器）| oracle（完美检索的上界）| no-mem（基线/下界，不带记忆）
+bash run_official.sh ours 12 strat        # 冒烟：我们的 BM25，12 题分层
+bash run_official.sh ours                  # 完整 500：我们的记忆方案（headline）
+bash run_official.sh no-mem                 # 纯模型基线（下界）
 ```
 
-输出落在 `results/`：`hyp_<tag>.jsonl`（答案）、`eval_<tag>.jsonl`（评判结果），
-以及打印出来的指标。
+四个 config（`bash run_official.sh CONFIG [LIMIT] [strat]`）：
+
+| config | 含义 |
+|---|---|
+| **ours** | 我们的 BM25 在真实 ~115k haystack 上取 top-10 session（`flat-session`） |
+| **no-mem** | 官方 `no-retrieval`：prompt 为**裸问题**，无任何历史框架——纯模型下界 |
+| **oracle** | evidence-only haystack，完美检索上界 |
+| **official-bm25** | 官方 `rank_bm25` 基线（需 `pip install rank_bm25`） |
+
+产物在 `official_out/`：`gen/*`（hypothesis）、`*.eval-results-minimax-m3`（评判），
+脚本末尾打印 整体/题型/弃答 准确率。
+
+## 错因归因（trace）
+
+`bm25_to_official.py` 除了产出官方检索日志，还为每题落一份 `*.trace.jsonl`：query、
+候选 session 数、**每个证据 session 的排名**、recall_any/all@k，以及 `failure_stage`：
+
+- `retrieval_ok` —— 证据全进 top-10（答错则是**生成**的锅）
+- `retrieval_partial` / `retrieval_miss` —— 证据部分/全部没进 top-10（**检索**的锅）
+- `no_evidence_in_corpus` / `abstention`
+
+```bash
+# 只看检索质量（不花 API）：
+python3 bm25_to_official.py --out official_out/retr.jsonl --retriever ours --limit 60 --stratified
+```
+
+## 对官方代码的最小适配（`official_patches.diff`）
+
+MiniMax-M3 是 reasoning 模型，需两处适配（**判定逻辑/指标不变**）：
+1. `run_generation.py`：未列出的模型 `model2maxlength` 兜底 128k；MiniMax 走 tiktoken 做
+   长度预算（避免 HF/torch）；transformers 惰性导入；hypothesis 剥 `<think>`。
+2. `evaluate_qa.py`：`model_zoo` 加 `minimax-m3`；judge 对 reasoning 模型放开 token 预算
+   （官方默认 10 太小）并剥 `<think>` 后再判 `'yes'`。
+
+## mem0 横向对比（官方 harness + MiniMax）
+
+用 **mem0 自己的官方 LongMemEval 评测**（[`memory-benchmarks`](https://github.com/mem0ai/memory-benchmarks)，
+即其 README 0.9+ 同一套），把 LLM（抽取+答题+评判）换成 MiniMax-M3、embedder 用本地
+`all-MiniLM-L6-v2`、向量库用 chroma——看在我们模型下 mem0 能到多少。
+
+mem0 官方 `run.py` 走 `Mem0Client(mode=oss)` 打一个 mem0 REST server；官方那个 server 带
+postgres+auth，原生跑不现实，所以用薄桥 `mem0_shim.py` 暴露它需要的 3 个 endpoint
+（`POST /memories`、`POST /search`、`DELETE /memories`），后端直接用**官方 `mem0.Memory`
+库**——只桥接传输层，mem0 的 extract→store→search 逻辑不动。
+
+```bash
+# 单开 py3.13 venv 装 mem0 全家桶（torch/sentence-transformers/chromadb）
+python3.13 -m venv ../../.venv-mem0
+../../.venv-mem0/bin/pip install "mem0ai>=2" sentence-transformers chromadb fastapi uvicorn \
+    openai aiohttp aiolimiter python-dotenv tqdm pydantic
+
+bash run_mem0.sh start-shim                # 起本地 REST 桥（前台，保持开着）
+bash run_mem0.sh run mm30 5 3              # 另开窗口：官方 benchmark，30 题分层，断点续跑
+```
+
+**口径**：mem0 跑它自己的官方 harness（自己的答题/评判 prompt），我们的 BM25 跑
+LongMemEval 官方 src——两者同模型(MiniMax)、同题库、同准确率指标，是"各自官方 harness、
+同模型"的系统级横向对比（mem0 的价值本在它整套 pipeline，硬塞成"只返回 top-k session"
+反而失真）。
+
+**注意**：mem0 要 ingest 每题完整 haystack（含干扰项，单题 225-240 个 pair），每个 pair
+一次 MiniMax 抽取调用——30 题数千次 reasoning 调用、**数小时**起步（`run.py` 逐 pair 断点
+可续）。OSS 版 `add` 不接受自定义 timestamp（cloud-only），记忆 `created_at`=注入时刻，但
+`run.py` 本就按时间顺序注入 session，时序大体保留。
 
 ## 结果
 
-完整 500/500 运行（bm25，topk=10，MiniMax-M3 答题 + 评判）：
-
-| 指标 | 分数 |
-|---|---|
-| 整体准确率（micro，非弃答，n=470） | **0.834** |
-| 题型平均准确率（6 种题型的均值） | **0.817** |
-| 弃答准确率（n=30） | **0.833** |
-
-单会话召回接近天花板（0.98 / 0.93）；差距在多会话（0.744，需要所有证据会话都进 top-k）
-和偏好（0.533，词法检索捞不到 persona 会话）。逐题型表格、分析，以及**无记忆基线
-（no-mem）**的对比见 `RESULTS.md`。
+完整 500 题结果（official harness，MiniMax-M3 读题+评判）见 `official_out/`；汇总表待跑完补入。
