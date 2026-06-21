@@ -58,14 +58,20 @@ cp -r theme_memory/   <你的项目>/.claude/skills/theme_memory/
 调用四个工具：
 
 ```bash
-python3 theme_memory/scripts/cli.py overview                              # 索引 + 各主题 wiki（wiki-first）
+python3 theme_memory/scripts/cli.py overview                              # 索引 + 根 wiki + 各主题 wiki
 python3 theme_memory/scripts/cli.py retrieve --query "staging 数据库 host" --limit 5   # BM25 跨主题召回
 python3 theme_memory/scripts/cli.py append --topic deploy-prod --source user \
   --content "Prod DB host 是 db-prod.internal:5432" --desc "生产部署配置"     # 持久化一条事实
-python3 theme_memory/scripts/cli.py summarize --topic deploy-prod         # 刷新该主题 wiki
+# 局部维护 wiki（增删改，未触及的行逐字保留；--root 改跨主题根 wiki）：
+python3 theme_memory/scripts/cli.py wiki --topic deploy-prod                          # 带行号查看
+python3 theme_memory/scripts/cli.py wiki --topic deploy-prod --append "Prod region eu-west-1" \
+  --update 2 "Prod DB host 现为 db2.internal" --delete 5
+python3 theme_memory/scripts/cli.py merge --into farm --from "farm-ops,farm-maint"    # 归并近义主题
+python3 theme_memory/scripts/cli.py summarize --topic deploy-prod                     # 整篇重写（兜底）
 ```
 
-这一步**只追加上下文、从不删除**，所以召回永远安全（fail-safe）。
+`retrieve` / `append` **只追加、从不删除**（召回永远安全 fail-safe）；`wiki` / `merge` 是你显式
+发起的维护操作，`wiki` 的局部编辑不会动你没点名的行。
 
 **B. Hook（每轮自动注入话题状态）** —— 拷 hook 并在 `.claude/settings.json` 注册：
 
@@ -111,9 +117,10 @@ hook 出任何错都静默 exit 0，绝不挡住或破坏用户的 prompt。可�
 **Recall（召回）** —— 级联升级，每层由充分性探针 gate，根 wiki 始终在视野内：
 
 1. **模型选相关主题**（BM25 兜底）。
-2. `wiki_bm25` → `wiki_full` → `topic_raw`（选中主题的 raw 日志）→ `full_raw`（**floor 兜底**，
-   全 session BM25，等价 bm25 基线）。
-3. floor 保证 theme 召回**永不弱于 bm25**。
+2. **wiki 层**：**模型判断**该题走 `wiki_bm25`（检索若干相关行——单点查找，可扩展）还是
+   `wiki_full`（整篇加载——计数/聚合/概览），不强制；不够则继续下探。
+3. `topic_raw`（选中主题的 raw 日志）→ `full_raw`（**floor 兜底**，全 session BM25，等价 bm25 基线）。
+4. floor 保证 theme 召回**永不弱于 bm25**。
 
 召回结果按官方 `retrieval_results` 契约喂给官方 reader，由官方 judge 评分（详见下文评测）。
 
@@ -151,7 +158,7 @@ theme_memory/
     store.py                       存储：按天日志 / wiki / 根 wiki / floor / 主题归并
     retrieve.py                    纯 Python BM25 召回（中英文）
     topic_state.py                 每轮话题状态：模型路由（BM25 兜底）+ 粘性 + fail-safe
-    cli.py                         overview / retrieve / append / summarize
+    cli.py                         overview / retrieve / append / wiki(局部增删改) / merge / summarize
 hooks/inject_topic_state.py        UserPromptSubmit 话题状态注入 hook
 .claude/settings.json              本仓 hook 注册
 eval/run_recall.py                 recall@k 验证

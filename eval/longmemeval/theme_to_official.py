@@ -178,19 +178,9 @@ NEW FACTS (session {date}):
 _OBJ = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def _wiki_bullets(text):
-    """The '- ...' bullet lines of a wiki blob (drops the '# title' header)."""
-    return [ln.strip()[2:].strip() for ln in (text or "").splitlines()
-            if ln.strip().startswith("- ")]
-
-
-def _render_wiki(title, bullets):
-    return f"{title}\n\n" + "\n".join(f"- {b}" for b in bullets) if bullets else ""
-
-
 def _wiki_update(client, model, current_bullets, date, facts, kind, rule):
-    """Model-judged LOCAL update. Returns the new bullet list: existing lines kept verbatim except
-    the ones the model explicitly revises, plus appended new facts. On any failure returns
+    """Model-judged LOCAL update. The model returns add/update/delete ops; store.apply_wiki_ops
+    applies them mechanically (untouched lines kept verbatim). On any failure returns
     current_bullets unchanged (no loss)."""
     numbered = "\n".join(f"[{i}] {b}" for i, b in enumerate(current_bullets, 1)) or "(empty)"
     prompt = WIKI_UPDATE_PROMPT.format(kind=kind, rule=rule, date=date, numbered=numbered, facts=facts)
@@ -210,7 +200,6 @@ def _wiki_update(client, model, current_bullets, date, facts, kind, rule):
         return current_bullets
     if not isinstance(ops, dict):
         return current_bullets
-    # updates/deletes reference ORIGINAL 1-based line numbers; rebuild from them, then append
     upd = {}
     for u in ops.get("update") or []:
         try:
@@ -219,34 +208,22 @@ def _wiki_update(client, model, current_bullets, date, facts, kind, rule):
                 upd[int(u["line"])] = t
         except Exception:
             continue
-    dele = set()
-    for d in ops.get("delete") or []:
-        try:
-            dele.add(int(d))
-        except Exception:
-            continue
-    lines = [upd.get(i, b) for i, b in enumerate(current_bullets, 1) if i not in dele]
-    seen = {b.lower() for b in lines}
-    for a in ops.get("append") or []:
-        a = str(a).strip()
-        if a and a.lower() not in seen:
-            lines.append(a)
-            seen.add(a.lower())
-    return lines
+    dele = {int(d) for d in ops.get("delete") or [] if str(d).strip().lstrip("-").isdigit()}
+    return store.apply_wiki_ops(current_bullets, append=ops.get("append"), update=upd, delete=dele)
 
 
 def _refresh_wiki(client, model, topic, current, date, facts):
     """Local, model-judged update of a topic's wiki. Returns the rendered wiki text."""
-    bullets = _wiki_update(client, model, _wiki_bullets(current), date, facts,
+    bullets = _wiki_update(client, model, store.wiki_bullets(current), date, facts,
                            "topic WIKI", TOPIC_WIKI_RULE)
-    return _render_wiki(f"# {topic}", bullets)
+    return store.render_wiki(f"# {topic}", bullets)
 
 
 def _refresh_root_wiki(client, model, current, date, facts):
     """Local, model-judged update of the global (cross-topic) wiki. Returns rendered text."""
-    bullets = _wiki_update(client, model, _wiki_bullets(current), date, facts,
+    bullets = _wiki_update(client, model, store.wiki_bullets(current), date, facts,
                            "user's GLOBAL cross-topic memory", ROOT_WIKI_RULE)
-    return _render_wiki("# GLOBAL (cross-topic)", bullets)
+    return store.render_wiki("# GLOBAL (cross-topic)", bullets)
 
 
 MERGE_PROMPT = """Here are the TOPICS in one user's memory ("name: description"). Some are
@@ -419,6 +396,26 @@ def _probe_sufficient(client, model, question, context):
     return ans.startswith("YES") or ("YES" in ans and "NO" not in ans)
 
 
+def _wiki_mode(client, model, question):
+    """The model decides how to read the wiki layer for THIS question — not a forced rule:
+      FULL   — load the whole wiki (counting / listing / aggregation / 'how many·which·all'),
+      SEARCH — BM25 a few specific lines (a single-fact lookup; scales as the wiki grows).
+    Default 'full' on failure (never under-feed). Returns 'full' or 'bm25'."""
+    prompt = ("A question will be answered from a user's memory wiki. Decide how to read it:\n"
+              "- FULL: needs the WHOLE wiki — counting, listing, 'how many / which / all / overall', "
+              "or aggregating across many facts.\n"
+              "- SEARCH: a specific single-fact lookup — a few relevant lines suffice.\n\n"
+              f"Question: {question}\n\nReply with exactly FULL or SEARCH.")
+    try:
+        comp = _chat(client, model=model, messages=[{"role": "user", "content": prompt}],
+                     n=1, temperature=0)
+    except Exception as e:
+        print(f"  [wiki-mode-fail -> full] {e!r}", flush=True)
+        return "full"
+    ans = _THINK.sub("", comp.choices[0].message.content or "").strip().upper()
+    return "bm25" if ("SEARCH" in ans and "FULL" not in ans) else "full"
+
+
 def _items_from_hits(hits, sid2date, topk, wiki=""):
     """Group raw hits by source session -> official ranked_items (one per corpus_id). BM25
     ranks the sources; the text fed is the topic-scoped excerpts that matched. Wiki, if
@@ -493,15 +490,15 @@ def recall(client, model, entry, topk, top_topics=5, limit_entries=60):
                 wiki_lines.append({"topic": "GLOBAL", "content": ln[2:].strip(),
                                    "source": "root-wiki"})
 
-    # tier 1a — BM25 within the wiki, feed only the relevant summary lines
-    wh = retr.bm25(q, wiki_lines, limit=limit_entries) if wiki_lines else []
-    if wh:
-        snippets = "\n".join(f"[{h['topic']}] {h['content']}" for h in wh)
-        if _probe_sufficient(client, model, q, snippets):
-            return _wiki_item(snippets, entry, sid2date), sel, "wiki_bm25"
-
-    # tier 1b — the full wiki
-    if full_wiki and _probe_sufficient(client, model, q, full_wiki):
+    # tier 1 — wiki layer: the MODEL decides BM25-search vs full-load for this question (not a
+    # forced rule). If the chosen path doesn't suffice, fall through to the raw/floor tiers.
+    if _wiki_mode(client, model, q) == "bm25":
+        wh = retr.bm25(q, wiki_lines, limit=limit_entries) if wiki_lines else []
+        if wh:
+            snippets = "\n".join(f"[{h['topic']}] {h['content']}" for h in wh)
+            if _probe_sufficient(client, model, q, snippets):
+                return _wiki_item(snippets, entry, sid2date), sel, "wiki_bm25"
+    elif full_wiki and _probe_sufficient(client, model, q, full_wiki):
         return _wiki_item(full_wiki, entry, sid2date), sel, "wiki_full"
 
     # tier 2 — wiki + selected topics' raw logs

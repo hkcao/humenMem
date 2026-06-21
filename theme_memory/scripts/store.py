@@ -206,6 +206,47 @@ def extractive_wiki(topic, max_entries=8) -> str:
     return "\n".join(lines)
 
 
+# --- local wiki edits (add / delete / modify, not full rewrite) -------------
+# Shared by the CLI and the eval scheme: the caller (an LLM — the agent, or MiniMax in eval)
+# decides the ops; this applies them mechanically so untouched lines are preserved verbatim.
+
+def wiki_bullets(text) -> list[str]:
+    """The '- ...' bullet lines of a wiki blob (drops the '# title' header)."""
+    return [ln.strip()[2:].strip() for ln in (text or "").splitlines()
+            if ln.strip().startswith("- ")]
+
+
+def render_wiki(title, bullets) -> str:
+    return (f"{title}\n\n" + "\n".join(f"- {b}" for b in bullets)) if bullets else ""
+
+
+def apply_wiki_ops(current_bullets, append=None, update=None, delete=None) -> list[str]:
+    """Pure local add/delete/modify over bullet lines, by 1-based line number. `update` is a
+    {line: text} map, `delete` a set of line numbers; lines not named are kept verbatim."""
+    update = update or {}
+    delete = set(delete or ())
+    lines = [update.get(i, b) for i, b in enumerate(current_bullets, 1) if i not in delete]
+    seen = {b.lower() for b in lines}
+    for a in (append or []):
+        a = str(a).strip()
+        if a and a.lower() not in seen:
+            lines.append(a)
+            seen.add(a.lower())
+    return lines
+
+
+def update_topic_wiki(topic, append=None, update=None, delete=None, root_wiki=False) -> None:
+    """Read → apply local ops → write, for a topic wiki (or the root wiki if root_wiki=True)."""
+    current = read_root_wiki() if root_wiki else read_wiki(topic)
+    bullets = apply_wiki_ops(wiki_bullets(current), append, update, delete)
+    title = "# GLOBAL (cross-topic)" if root_wiki else f"# {topic}"
+    text = render_wiki(title, bullets)
+    if root_wiki:
+        write_root_wiki(text)
+    else:
+        write_wiki(topic, text)
+
+
 # --- root wiki (cross-topic global view) ------------------------------------
 
 ROOT_WIKI = "wiki.md"
