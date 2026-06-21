@@ -40,7 +40,7 @@ CONFIG = {
         "model": "MiniMax-M3",
         "openai_base_url": "https://api.minimaxi.com/v1",
         "temperature": 0,
-        "max_tokens": 2048,  # room for MiniMax-M3 <think> before the JSON
+        # max_tokens left unset -> model default (room for MiniMax-M3 <think> + output)
     }},
     "embedder": {"provider": "huggingface", "config": {"model": "all-MiniLM-L6-v2"}},
     "vector_store": {"provider": "chroma", "config": {

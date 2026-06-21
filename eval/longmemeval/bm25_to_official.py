@@ -32,7 +32,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-sys.path.insert(0, os.path.join(REPO, "theme_memory"))
+sys.path.insert(0, os.path.join(REPO, "theme_memory", "scripts"))
 import retrieve as retr  # noqa: E402  our pure-Python BM25 engine
 
 CORE_TYPES = ["single-session-user", "single-session-assistant", "single-session-preference",

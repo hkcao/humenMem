@@ -118,6 +118,21 @@ BM25 基线较纯模型下界提升约 **7 倍**。短板在 `single-session-pre
 
 ## theme-memory 真方案（端到端）
 
-> 🚧 进行中。这一节才是 theme-memory 设计方案的真实评测：按时间顺序把每题 haystack
-> **灌进 `theme_memory` 引擎**（LLM 做主题路由 + 抽取入库），查询时经主题状态/主题召回
-> 取上下文喂给官方读题模型。结果待跑完补入；与上面的 BM25 基线、no-mem、mem0 同模型同题库对照。
+这一节才是 theme-memory 设计方案的真实评测，由 `theme_to_official.py` + `run_theme.sh` 跑：
+
+```bash
+bash run_theme.sh 6 strat        # 6 题分层（小样本）；省略 LIMIT 跑全量 500
+```
+
+**Ingest**：按时间顺序逐 session —— ① 每个 session 全文存进无损 floor（`_sessions/`，等价 bm25
+基线语料，保底覆盖）；② 一次 LLM 调用把 turns 路由到主题，verbatim 摘录入各主题 `logs/<day>.md`；
+③ **局部更新**各主题 wiki（模型增删改，未点名的行逐字保留，无损累积）；④ 把跨主题关键事实（pending
+待办/个人核心事实）局部更新进根 `wiki.md`；⑤ ingest 后跑一次 LLM 聚类**归并近义主题**。
+
+**Recall**：模型选相关主题（BM25 兜底）→ 级联 `wiki_bm25 → wiki_full → topic_raw → full_raw`，每层
+由充分性探针 gate，根 wiki 始终在视野；`full_raw` 是 **floor 兜底**（全 session BM25），保证 theme
+召回**永不弱于 bm25**。产物 `*.themes.jsonl` 记录每题的主题数、归并、`recall_tier`，便于诊断。
+
+> 口径与 BM25 基线、no-mem、mem0 一致：同 LongMemEval 官方 harness、同 MiniMax-M3 读题+评判、同题库。
+> 设计要点：路由/探针/wiki 都可能出错，但 floor 兜底 + wiki 无损更新保证了**不弱于 bm25 的下界**。
+> 🚧 全量 500 的最终数字待跑完补入。

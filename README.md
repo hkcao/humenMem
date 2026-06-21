@@ -1,57 +1,78 @@
 # humanMem — 面向长对话的主题分区记忆
 
-一个为 AI 编程/聊天 agent 设计的、按**主题分区**的外部记忆系统。它要解决的，是真正
-会拖垮长单窗口对话的那个问题：**切换话题时的跨主题混淆**（实体/属性串味、指代歧义、
-旧话题锚定、来源张冠李戴）。
+一个为 AI 编程/聊天 agent 设计的、按**主题分区**的外部记忆系统。它要解决的，是真正会
+拖垮长单窗口对话的那个问题：**切换话题时的跨主题混淆**（实体/属性串味、指代歧义、旧话题
+锚定、来源张冠李戴），以及**滚出窗口的事实如何被可靠召回**。
 
-整个设计从"低风险/只增量"到"高风险/激进"分阶段推进。核心原则是：可靠且有价值的部分
-是**主题化检索 + 按需召回**（fail-safe——它永远只会*追加*上下文，所以一次路由错误绝不
-会是灾难性的）；而真正的*淘汰/驱逐*被推后，因为它带有路由 + 存储的风险。
+核心原则贯穿始终：
 
-## 这里有什么
+- **Fail-safe**：记忆只会*追加*上下文，从不静默删事实——一次路由错误绝不会是灾难性的。
+- **theme ⊇ bm25**：召回最底层始终是一份无损的全 session 语料（floor），其 BM25 检索等价
+  于扁平 session 基线，所以主题层再怎么出错，召回也**永不弱于**朴素 BM25。
+- **无损更新**：wiki 用"局部增删改"而非全量重写，模型只动它点名的行，其余逐字保留，杜绝
+  重写时静默丢事实。
 
-### 第 1 步 —— 检索与召回（skills）—— `theme_memory/`、`skills/theme-memory/`
-一个位于 `~/.claude/hank_memory/`（可用 `HANK_MEMORY_DIR` 覆盖）的主题分区存储：
-每个主题一份**只追加的 `log.md`**（事实来源）、一份**可重建的 `summary.md`** 缓存，
-以及一份 `MEMORY_INDEX.md`。四个工具（`overview / retrieve / append / summarize`）
-对外暴露纯 Python 的 BM25 召回（支持中英文）。由 `eval/run_recall.py` 验证。
+## 架构总览
 
-### 第 2 步 —— 每轮的结构注入（hook）—— `hooks/`、`theme_memory/topic_state.py`
-一个 `UserPromptSubmit` hook 会在每一轮之前注入：**当前话题锚点**、**对每个已知话题
-打标签的一行描述**，以及一条*不要张冠李戴*的提醒。路由是**粘性的**（除非另一个话题
-明显胜出，否则保持不变）且**fail-safe 的**（所有话题始终都被列出，所以一次路由错误
-藏不住任何东西）。由 `eval/run_routing.py` 验证。
+系统分两层，共用同一套存储引擎（`theme_memory/scripts/`）：
 
-### 路线图（尚未构建）
-第 3 步 —— 软隔离（切换话题时把跑题内容折叠进打标签的摘要里）。第 4 步 —— 真正的
-硬淘汰（需要通过 Agent SDK / 自定义 harness 来掌控消息数组本身）。
+| 层 | 是什么 | 入口 |
+|---|---|---|
+| **运行时（agent 侧）** | Claude Code skill（按需召回/写入）+ 每轮注入话题状态的 hook | `theme_memory/SKILL.md` + `scripts/`、`hooks/` |
+| **完整方案（eval 侧）** | LongMemEval 上的端到端 theme-memory：LLM 主题路由 + 入库 + 主题归并 + 级联召回 | `eval/longmemeval/theme_to_official.py` |
+
+运行时层用的是稳定、可靠的子集（主题化 BM25 召回 + 模型路由的话题状态注入）；更激进的机制
+（跨主题根 wiki、主题归并、级联召回、充分性探针）先在 eval 侧验证，证明有效后再下放运行时。
+
+## 存储布局
+
+存储根目录为 `~/.claude/hank_memory/`（用 `HANK_MEMORY_DIR` 覆盖；eval 里每题一个隔离子库）：
+
+```
+<root>/
+  MEMORY_INDEX.md            主题清单：每行 "主题名 — 一行描述"
+  log.md                     全局时间线：所有主题的条目按写入时序（带 topic= 标签）
+  wiki.md                    跨主题根 wiki：pending 待办/关键事实/跨主题数据（eval 侧维护）
+  <topic>/
+    logs/<YYYY-MM-DD>.md     按天切分的只追加日志 —— 事实来源（source of truth）
+    wiki.md                  该主题的知识库（局部增删改维护的事实/数据）
+  _sessions/logs/<day>.md    无损 session floor：每个原始 session 全文（bm25 等价语料，eval 侧）
+```
+
+`logs/` 是真相源，`wiki.md` 是可重建缓存，`_sessions/` 是召回兜底的无损底座。运行时 CLI 会
+写 `logs/`、`wiki.md`、`log.md`、`MEMORY_INDEX.md`；根 `wiki.md`、`_sessions/` floor、主题归并
+目前由 eval 侧的 ingest 产生。
 
 ## 快速开始 —— 在 agent 里集成
 
-记忆引擎是**纯 Python、零依赖**，存储默认在 `~/.claude/hank_memory/`（用 `HANK_MEMORY_DIR`
-覆盖）。集成有两条腿，可单独用也可一起用：
+记忆引擎是**纯 Python、零依赖**。集成有两条腿，可单独用也可一起用。
 
-**A. Skill（模型按需召回/写入）** —— 把这两样拷进你的 Claude Code 项目（skill 源在本仓
-顶层 `skills/`，拷进目标项目时放到它的 `.claude/skills/` 下供框架发现）：
+**A. Skill（模型按需召回/写入）** —— skill 是标准结构（`theme_memory/SKILL.md` + `scripts/`）。
+拷进目标项目时放到它的 `.claude/skills/` 下供框架发现：
+
 ```bash
-cp -r theme_memory/              <你的项目>/theme_memory/
-cp -r skills/theme-memory/       <你的项目>/.claude/skills/theme-memory/
+cp -r theme_memory/   <你的项目>/.claude/skills/theme_memory/
 ```
-之后 agent 会在"用户提到之前聊过的东西 / 切换话题 / 问当前窗口外的上下文"时自动触发
-skill，调用四个工具：
+
+之后 agent 会在"用户提到之前聊过的东西 / 切换话题 / 问当前窗口外的上下文"时自动触发 skill，
+调用四个工具：
+
 ```bash
-python3 theme_memory/cli.py overview                              # 索引 + 各话题摘要（summary-first）
-python3 theme_memory/cli.py retrieve --query "staging 数据库 host" --limit 5   # BM25 跨话题召回
-python3 theme_memory/cli.py append --topic deploy-prod --source user \
+python3 theme_memory/scripts/cli.py overview                              # 索引 + 各主题 wiki（wiki-first）
+python3 theme_memory/scripts/cli.py retrieve --query "staging 数据库 host" --limit 5   # BM25 跨主题召回
+python3 theme_memory/scripts/cli.py append --topic deploy-prod --source user \
   --content "Prod DB host 是 db-prod.internal:5432" --desc "生产部署配置"     # 持久化一条事实
-python3 theme_memory/cli.py summarize --topic deploy-prod         # 刷新该话题摘要
+python3 theme_memory/scripts/cli.py summarize --topic deploy-prod         # 刷新该主题 wiki
 ```
+
 这一步**只追加上下文、从不删除**，所以召回永远安全（fail-safe）。
 
 **B. Hook（每轮自动注入话题状态）** —— 拷 hook 并在 `.claude/settings.json` 注册：
+
 ```bash
-cp -r hooks/                              <你的项目>/hooks/
+cp -r hooks/   <你的项目>/hooks/
 ```
+
 ```jsonc
 // .claude/settings.json
 {
@@ -63,79 +84,83 @@ cp -r hooks/                              <你的项目>/hooks/
   }
 }
 ```
-每轮提交前，hook 会注入**当前话题锚点 + 每个已知话题的一行标签 + 一条"别张冠李戴"的
-提醒**；路由是粘性且 fail-safe 的（所有话题始终列出）。hook 出任何错都静默退出（exit 0），
-绝不会挡住或破坏用户的 prompt。
 
-> 不用 Claude Code 也能集成：直接把 `theme_memory/cli.py` 当子进程调，或 `import
-> retrieve` / `topic_state` 在你自己的 harness 里用——两者都是普通 Python 模块。
+每轮提交前，hook 注入**当前话题锚点 + 每个已知话题的一行标签 + 一条"别张冠李戴"的提醒**。
+当前话题由**模型判断**（无 key/失败时回落到带粘性的 BM25），所有话题始终列出（fail-safe）。
+hook 出任何错都静默 exit 0，绝不挡住或破坏用户的 prompt。可用 `THEME_MEMORY_MODEL_ROUTING=0`
+关掉模型路由、退回纯 BM25（零延迟）。
+
+> 不用 Claude Code 也能集成：把 `theme_memory/scripts/cli.py` 当子进程调，或 `import store /
+> retrieve / topic_state` 在你自己的 harness 里用——都是普通 Python 模块。
+
+## 完整方案（eval 侧的端到端设计）
+
+`eval/longmemeval/theme_to_official.py` 是 theme-memory 设计的完整实现。对每道题的 ~115k haystack：
+
+**Ingest（入库）** —— 按时间顺序逐 session：
+
+1. **无损 floor**：每个 session 全文先存进 `_sessions/`（与扁平 BM25 基线同语料，保底覆盖）。
+2. **主题路由**：一次 LLM 调用把该 session 的 turns 分组到主题（能复用已有主题就复用），verbatim
+   摘录写进各主题的 `logs/<day>.md`。
+3. **局部更新 wiki**：模型对每个主题的 wiki 做**增删改**（append 新事实 / update 被取代的行 /
+   delete 已完成或过时的行），未点名的行逐字保留——无损累积。
+4. **根 wiki**：把该 session 的跨主题关键事实（pending 待办、个人核心事实、跨主题数据）局部更新进
+   根 `wiki.md`。
+5. **主题归并**：ingest 后跑一次 LLM 聚类，把近义/碎片化的小主题合并成大主题（`merge_topics`）。
+
+**Recall（召回）** —— 级联升级，每层由充分性探针 gate，根 wiki 始终在视野内：
+
+1. **模型选相关主题**（BM25 兜底）。
+2. `wiki_bm25` → `wiki_full` → `topic_raw`（选中主题的 raw 日志）→ `full_raw`（**floor 兜底**，
+   全 session BM25，等价 bm25 基线）。
+3. floor 保证 theme 召回**永不弱于 bm25**。
+
+召回结果按官方 `retrieval_results` 契约喂给官方 reader，由官方 judge 评分（详见下文评测）。
 
 ## 评测 —— LongMemEval（官方 harness）
 
-在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 道题）上做端到端 QA。
-**规范跑法是直接复用官方 `src/` harness**（`run_generation` + `evaluate_qa`，逐题型 /
-弃答 verbatim prompt），我们的记忆检索按官方 `retrieval_results` 契约插进去；
-读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点）。这样数字才能和 LongMemEval 榜单、以及
-mem0 等框架横向对比。跑法见 [`eval/longmemeval/README.md`](eval/longmemeval/README.md)。
+在 [LongMemEval](https://github.com/xiaowu0162/LongMemEval)_S（500 题，每题 ~115k-token haystack）
+上做端到端 QA，**全程复用官方 `src/` harness**（`run_generation` + `evaluate_qa`，逐题型/弃答
+verbatim prompt）；读题与评判都用 **MiniMax-M3**（OpenAI 兼容端点），数字可与 LongMemEval 榜单、
+mem0 等横向对比。完整跑法见 [`eval/longmemeval/README.md`](eval/longmemeval/README.md)。
 
-> ⚠️ `ours` 配置目前是 **theme-memory 的 BM25 引擎单跑 session 级召回**（主题层未启用），
-> 是**对照基线**；theme-memory 完整方案（主题路由 + 入库 + 主题召回）的端到端评测见
-> [`eval/longmemeval/README.md`](eval/longmemeval/README.md) 的「theme-memory 真方案」一节。
-
-**快速开始（跑评测）：**
 ```bash
 cd eval/longmemeval
-bash setup_official.sh                       # clone 官方仓库(pinned) + 打 MiniMax 补丁 + 建 .venv 装依赖
+bash setup_official.sh                       # clone 官方仓库(pinned) + 打 MiniMax 补丁 + 建 .venv
 echo "sk-..." > ~/.minimax_key && chmod 600 ~/.minimax_key
 # 数据（gitignored，约 292MB）：
 curl -sL -o data/longmemeval_s_cleaned.json https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json
-curl -sL -o data/longmemeval_oracle.json    https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json
 
-bash run_official.sh ours 12 strat           # 冒烟：BM25 session 检索基线，12 题分层
-bash run_official.sh ours                     # 完整 500：BM25 session 检索（对照基线）
-bash run_official.sh no-mem                    # 基线下界
-# 只看检索质量 + 错因归因（不花 API）：
-python3 bm25_to_official.py --out official_out/retr.jsonl --retriever ours --limit 60 --stratified
+bash run_theme.sh 6 strat                     # theme 完整方案：6 题分层（小样本验证）
+bash run_official.sh ours                      # 对照：BM25 session 检索基线
+bash run_official.sh no-mem                    # 下界：裸问题
 ```
-mem0 横向对比的快速开始见 [`README_mem0.md`](eval/longmemeval/README_mem0.md)。
 
-四个 config 一键跑（`bash run_official.sh CONFIG`）：
-
-- **ours** —— BM25 引擎在真实 ~115k-token haystack 上取 top-10 session（**主题层未启用，对照基线**）。
-- **no-mem** —— 官方 `no-retrieval`：prompt 为**裸问题**，无任何历史、无 "no relevant
-  history" 框架（与官方闭卷跑法一致）。检索下界。
-- **oracle** —— evidence-only haystack，完美检索上界。
-- **official-bm25** —— 官方 `rank_bm25` 基线。
-
-**错因归因**：检索适配器每题落一份 `*.trace.jsonl`，记录每个证据 session 的排名、
-recall@k 与 `failure_stage`（`retrieval_ok` / `retrieval_miss` / …），答错时一眼区分
-**检索没捞到** vs **生成没用好**。
-
-### mem0 横向对比（官方 harness + MiniMax）
-
-用 **mem0 自己的官方 LongMemEval 评测**（[`memory-benchmarks`](https://github.com/mem0ai/memory-benchmarks)，
-即其 README 0.9+ 同一套），把 LLM 换成 MiniMax-M3、embedder 用本地 all-MiniLM——看在我们
-模型下 mem0 能到多少，与我们的 BM25 做"各自官方 harness、同模型同题库"的系统级对照。跑法
-（含一个绕开 Docker 的本地 REST 桥 `mem0_shim.py`，后端是官方 `mem0.Memory` 库）见
+配置说明、错因归因（`*.trace.jsonl` / `*.themes.jsonl`）、mem0 横向对比，均见
 [`eval/longmemeval/README.md`](eval/longmemeval/README.md)。
 
-> 为什么选 LongMemEval 而非 LOCOMO：它有逐题的证据标注、一个可控的干扰项 haystack
-> （让选择性召回真正起作用），以及专门的知识更新 / 弃答类别——这些恰好对应到我们的
-> 检索指标和我们的可靠性风险点。
+> 为什么选 LongMemEval 而非 LOCOMO：它有逐题证据标注、可控的干扰项 haystack（让选择性召回真正
+> 起作用），以及知识更新 / 弃答类别——恰好对应到我们的检索指标与可靠性风险点。
 
 ## 目录结构
 
 ```
-theme_memory/                      第 1 步存储 + BM25 + CLI；第 2 步 topic_state
-skills/theme-memory/SKILL.md       记忆 skill（拷进目标项目的 .claude/skills/ 用）
+theme_memory/
+  SKILL.md                         记忆 skill 定义（拷进目标项目的 .claude/skills/ 用）
+  scripts/
+    store.py                       存储：按天日志 / wiki / 根 wiki / floor / 主题归并
+    retrieve.py                    纯 Python BM25 召回（中英文）
+    topic_state.py                 每轮话题状态：模型路由（BM25 兜底）+ 粘性 + fail-safe
+    cli.py                         overview / retrieve / append / summarize
 hooks/inject_topic_state.py        UserPromptSubmit 话题状态注入 hook
-.claude/settings.json              本仓 hook 注册（框架配置）
-eval/run_recall.py                 第 1 步 recall@k 验证
-eval/run_routing.py                第 2 步路由 + fail-safe 验证
+.claude/settings.json              本仓 hook 注册
+eval/run_recall.py                 recall@k 验证
+eval/run_routing.py                路由 + fail-safe 验证
 eval/longmemeval/
-  setup_official.sh                clone 官方仓库（pinned）+ 打 MiniMax 补丁 + 建 venv 装依赖
-  bm25_to_official.py              BM25 → 官方 retrieval_results + 错因归因 trace
-  run_official.sh                  ours / no-mem / oracle / official-bm25 一键跑
+  setup_official.sh                clone 官方仓库（pinned）+ 打 MiniMax 补丁 + 建 venv
+  theme_to_official.py             完整方案：ingest（路由+局部更新 wiki+根 wiki+归并）+ 级联召回
+  bm25_to_official.py              BM25 基线 → 官方 retrieval_results + 错因归因 trace
+  run_theme.sh / run_official.sh   theme 完整方案 / 对照配置 一键跑
   official_patches.diff            对官方脚本的最小 MiniMax 适配
   mem0_shim.py / run_mem0.sh       mem0 官方 eval（MiniMax）的本地 REST 桥 + 跑法
   README.md                        评测跑法文档（含 mem0 横向对比）

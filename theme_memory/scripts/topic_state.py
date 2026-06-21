@@ -14,15 +14,72 @@ deletion. Cross-topic entity bleed (co-presence) is left for a later step.
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import store
 import retrieve as retr
 
 # how much a rival topic must beat the current one (by BM25 score) to steal focus
+# (only used by the BM25 fallback when the model router is unavailable)
 SWITCH_MARGIN = 1.3
 # max topics listed in the injected block (current is always included)
 MAX_LISTED = 6
+
+# model router (preferred); falls back to BM25 stickiness on any failure
+ROUTER_MODEL = os.environ.get("THEME_MEMORY_ROUTER_MODEL", "MiniMax-M3")
+ROUTER_BASE = os.environ.get("THEME_MEMORY_ROUTER_BASE", "https://api.minimaxi.com/v1")
+ROUTER_KEY_FILE = os.path.expanduser(os.environ.get("THEME_MEMORY_ROUTER_KEY_FILE",
+                                                     "~/.minimax_key"))
+
+
+def _router_key() -> str | None:
+    key = os.environ.get("MINIMAX_API_KEY")
+    if key:
+        return key.strip()
+    try:
+        return open(ROUTER_KEY_FILE).read().strip() or None
+    except Exception:
+        return None
+
+
+def _model_pick_topic(prompt: str, current, items: dict):
+    """Ask the model which existing topic this prompt belongs to (sticky: prefer `current`
+    unless the message clearly belongs elsewhere). Returns a topic name from `items` or None
+    (None -> caller uses the BM25 fallback). Fail-safe: any error returns None."""
+    if not items or os.environ.get("THEME_MEMORY_MODEL_ROUTING", "1") == "0":
+        return None
+    key = _router_key()
+    if not key:
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key, base_url=ROUTER_BASE, timeout=30.0)
+        topics_block = "\n".join(f"- {t}: {d}" for t, d in items.items())
+        msg = (
+            "You route a user's new message to ONE topic in their long-term memory.\n"
+            f"Current topic: {current or '(none)'} — keep it unless the message clearly "
+            "belongs to a different topic below.\n\n"
+            f"Topics:\n{topics_block}\n\n"
+            f"User message:\n{prompt}\n\n"
+            "Reply with EXACTLY one topic name copied verbatim from the list, or NONE if "
+            "the message fits no existing topic. No other words.")
+        comp = client.chat.completions.create(
+            model=ROUTER_MODEL, messages=[{"role": "user", "content": msg}],
+            temperature=0)
+        ans = re.sub(r"<think>.*?</think>", "", comp.choices[0].message.content or "",
+                     flags=re.DOTALL).strip()
+        if not ans or ans.upper() == "NONE":
+            return None
+        if ans in items:                                   # exact match
+            return ans
+        low = ans.lower()
+        for t in items:                                    # tolerant match
+            if t.lower() == low or t.lower() in low:
+                return t
+        return None
+    except Exception:
+        return None
 
 
 def _session_file(session_id: str):
@@ -49,8 +106,14 @@ def save_state(session_id: str, current_topic) -> None:
 
 
 def decide_topic(prompt: str, current):
-    """Return (current_topic, ranked) applying stickiness."""
+    """Return (current_topic, ranked). The model router picks the current topic; BM25
+    `ranked` still orders the injected block. Falls back to BM25 stickiness when the
+    router is unavailable."""
     ranked = retr.rank_topics(prompt)
+    picked = _model_pick_topic(prompt, current, store.index_items())
+    if picked:
+        return picked, ranked
+    # --- BM25 fallback (stickiness by score margin) ---
     if not ranked:
         return current, ranked
     best_t, best_s = ranked[0]

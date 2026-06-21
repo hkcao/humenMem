@@ -49,10 +49,13 @@ def retrieve(query, topic=None, limit=5) -> list[dict]:
 
 
 def rank_topics(query, limit=None) -> list[tuple]:
-    """Rank whole topics by relevance to query (topic doc = summary + log)."""
+    """Rank whole topics by relevance to query (topic doc = wiki + log).
+
+    BM25 fallback for topic selection; the model-based router is preferred when a
+    client is available (see topic_state and eval/theme_to_official)."""
     topics = store.list_topics()
     if not topics:
         return []
-    docs = [{"topic": t, "content": store.read_summary(t) + "\n" + store.read_log(t)} for t in topics]
+    docs = [{"topic": t, "content": store.read_wiki(t) + "\n" + store.read_log(t)} for t in topics]
     ranked = bm25(query, docs, limit=limit or len(docs))
     return [(d["topic"], d["score"]) for d in ranked]

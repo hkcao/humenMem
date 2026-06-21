@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "theme_memory"))
+sys.path.insert(0, str(HERE.parent / "theme_memory" / "scripts"))
 
 # (prompt, expected current topic after this turn)
 SEQUENCE = [

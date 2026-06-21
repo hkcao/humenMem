@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """theme-memory tools CLI. Run from the repo root:
 
-    python3 theme_memory/cli.py <command> [args]
+    python3 theme_memory/scripts/cli.py <command> [args]
 
 Commands:
-  overview                              MEMORY_INDEX + all topic summaries (summary-first)
+  overview                              MEMORY_INDEX + all topic wikis (wiki-first)
   retrieve --query Q [--topic T] [--limit N]   BM25 recall of log entries
   append --topic T --content C [--source S] [--desc D] [--timestamp TS]
-  summarize --topic T [--content C]     write summary.md (agent text, else extractive)
+  summarize --topic T [--content C]     write wiki.md (agent text, else extractive)
 """
 import argparse
 import os
@@ -21,9 +21,9 @@ import retrieve as retr  # noqa: E402
 def cmd_overview(a):
     print(store.read_index_text())
     for t in store.list_topics():
-        s = store.read_summary(t)
+        s = store.read_wiki(t)
         if s:
-            print(f"\n--- summary: {t} ---\n{s}")
+            print(f"\n--- wiki: {t} ---\n{s}")
 
 
 def cmd_retrieve(a):
@@ -43,9 +43,9 @@ def cmd_append(a):
 
 
 def cmd_summarize(a):
-    content = a.content or store.extractive_summary(a.topic)
-    store.write_summary(a.topic, content)
-    print(f"summary written for {a.topic}")
+    content = a.content or store.extractive_wiki(a.topic)
+    store.write_wiki(a.topic, content)
+    print(f"wiki written for {a.topic}")
 
 
 def main():
