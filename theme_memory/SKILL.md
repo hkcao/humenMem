@@ -58,6 +58,12 @@ cross-topic root wiki instead of a topic):
       --delete 5
     python3 theme_memory/scripts/cli.py wiki --root --append "PENDING: rotate prod API key"
 
+Reference a related topic inline as `[[topic-name]]` to interlink wikis for quick jumps; the
+reverse backlink (`↔ [[this-topic]]`) is added to the target automatically (additive, idempotent):
+
+    python3 theme_memory/scripts/cli.py wiki --topic deploy-prod \
+      --append "DB schema owned by [[database]]"   # database's wiki gains a ↔ [[deploy-prod]] backlink
+
 Merge near-duplicate topics into one canonical topic (moves their logs, combines their wikis):
 
     python3 theme_memory/scripts/cli.py merge --into farm --from "farm-ops,farm-maint"
@@ -74,3 +80,5 @@ Whole-wiki rewrite (you supply the text; omit `--content` for an extractive fall
 - Prefer `retrieve` over guessing when answering "what did we say about X".
 - Prefer `wiki` (local add/revise/delete) over `summarize` (full rewrite) to keep a wiki
   current — local edits never silently drop a fact you didn't touch.
+- Cross-link related topics with `[[topic-name]]` (exact name) when a fact spans topics; the
+  backlink is mirrored automatically, so you can jump either direction later.

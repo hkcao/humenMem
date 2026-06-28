@@ -162,7 +162,7 @@ The CURRENT lines are numbered. Using your judgment, add / revise / delete as ne
   space.
 - Lines you do not mention are preserved verbatim — never silently drop a still-true fact.
 - If a new fact is already recorded, omit it (no op).
-
+{links}
 Return ONLY a JSON object (no prose, no code fence):
 {{"append": ["<new fact line>", ...],
   "update": [{{"line": <n>, "text": "<revised line>"}}, ...],
@@ -178,12 +178,19 @@ NEW FACTS (session {date}):
 _OBJ = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def _wiki_update(client, model, current_bullets, date, facts, kind, rule):
+def _wiki_update(client, model, current_bullets, date, facts, kind, rule, link_topics=None):
     """Model-judged LOCAL update. The model returns add/update/delete ops; store.apply_wiki_ops
     applies them mechanically (untouched lines kept verbatim). On any failure returns
-    current_bullets unchanged (no loss)."""
+    current_bullets unchanged (no loss). `link_topics` (other existing topics) lets the model
+    cross-link a fact to a related topic inline as [[name]]; backlinks are mirrored by the store."""
     numbered = "\n".join(f"[{i}] {b}" for i, b in enumerate(current_bullets, 1)) or "(empty)"
-    prompt = WIKI_UPDATE_PROMPT.format(kind=kind, rule=rule, date=date, numbered=numbered, facts=facts)
+    links = ""
+    if link_topics:
+        lst = ", ".join(f"[[{t}]]" for t in link_topics)
+        links = ("- CROSS-LINK: when a fact clearly relates to another topic, reference it inline "
+                 f"with its exact [[name]] so topics interlink for quick jumps. Existing topics: {lst}\n")
+    prompt = WIKI_UPDATE_PROMPT.format(kind=kind, rule=rule, date=date, numbered=numbered,
+                                       facts=facts, links=links)
     try:
         comp = _chat(client, model=model, messages=[{"role": "user", "content": prompt}],
                      n=1, temperature=0)
@@ -212,10 +219,10 @@ def _wiki_update(client, model, current_bullets, date, facts, kind, rule):
     return store.apply_wiki_ops(current_bullets, append=ops.get("append"), update=upd, delete=dele)
 
 
-def _refresh_wiki(client, model, topic, current, date, facts):
+def _refresh_wiki(client, model, topic, current, date, facts, link_topics=None):
     """Local, model-judged update of a topic's wiki. Returns the rendered wiki text."""
     bullets = _wiki_update(client, model, store.wiki_bullets(current), date, facts,
-                           "topic WIKI", TOPIC_WIKI_RULE)
+                           "topic WIKI", TOPIC_WIKI_RULE, link_topics=link_topics)
     return store.render_wiki(f"# {topic}", bullets)
 
 
@@ -287,12 +294,31 @@ def ingest(client, model, entry):
     order = sorted(range(len(entry["haystack_session_ids"])),
                    key=lambda i: entry["haystack_dates"][i])
     n_raw = n_sess = n_fail = 0
+    cur_day = day_date = None
+    day_facts = []                        # this day's cross-topic facts, flushed once per day
+
+    def flush_day():
+        # end-of-day digest: fold the whole day's facts into the root wiki in ONE refresh
+        # (vs once per session) — models "tidy up at the end of the day" and cuts the
+        # per-session root-wiki call (~40% of ingest) down to one call per distinct day.
+        nonlocal day_facts
+        if day_facts:
+            rw = _refresh_root_wiki(client, model, store.read_root_wiki(), day_date,
+                                    "\n".join(day_facts))
+            if rw:
+                store.write_root_wiki(rw)
+        day_facts = []
+
     for i in order:
         sid = entry["haystack_session_ids"][i]
         date = entry["haystack_dates"][i]
         turns = _turns(entry["haystack_sessions"][i])
         if not turns:
             continue
+        day = store._day_key(date)
+        if cur_day is not None and day != cur_day:
+            flush_day()                   # day rolled over -> tidy the previous day first
+        cur_day, day_date = day, date
         # lossless floor: full session verbatim, regardless of (or before) routing
         store.append_session(sid, "\n".join(turns), timestamp=_safe_ts(date))
         try:
@@ -312,16 +338,15 @@ def ingest(client, model, entry):
                          timestamp=_safe_ts(date))
             n_raw += 1
             if r["summary"]:
+                others = [t for t in store.list_topics() if t != r["topic"]]
                 merged = _refresh_wiki(client, model, r["topic"], store.read_wiki(r["topic"]),
-                                       date, r["summary"])
+                                       date, r["summary"], link_topics=others)
                 if merged:
                     store.write_wiki(r["topic"], merged)
-        # cross-topic: fold this session's facts into the global (root) wiki
-        sess_facts = "\n".join(f"- {r['summary']}" for r in routes if r["summary"])
-        if sess_facts:
-            rw = _refresh_root_wiki(client, model, store.read_root_wiki(), date, sess_facts)
-            if rw:
-                store.write_root_wiki(rw)
+                    store.sync_backlinks(r["topic"])   # mirror [[links]] as backlinks
+        # cross-topic facts accumulate; the root wiki is refreshed once at end-of-day
+        day_facts.extend(f"- {r['summary']}" for r in routes if r["summary"])
+    flush_day()                           # final day
     return n_raw, n_sess, n_fail
 
 

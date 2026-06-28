@@ -126,8 +126,9 @@ bash run_theme.sh 6 strat        # 6 题分层（小样本）；省略 LIMIT 跑
 
 **Ingest**：按时间顺序逐 session —— ① 每个 session 全文存进无损 floor（`_sessions/`，等价 bm25
 基线语料，保底覆盖）；② 一次 LLM 调用把 turns 路由到主题，verbatim 摘录入各主题 `logs/<day>.md`；
-③ **局部更新**各主题 wiki（模型增删改，未点名的行逐字保留，无损累积）；④ 把跨主题关键事实（pending
-待办/个人核心事实）局部更新进根 `wiki.md`；⑤ ingest 后跑一次 LLM 聚类**归并近义主题**。
+③ **局部更新**各主题 wiki（模型增删改，未点名的行逐字保留，无损累积）；④ **按天**把跨主题关键事实
+（pending 待办/个人核心事实）局部更新进根 `wiki.md`——同一天 session 全处理完才整理一次（模拟"每天结束
+归整"，根 wiki 调用从每 session 降到每天一次）；⑤ ingest 后跑一次 LLM 聚类**归并近义主题**。
 
 **Recall**：模型选相关主题（BM25 兜底）→ **wiki 层由模型判断走 `wiki_bm25`（检索相关行）还是
 `wiki_full`（整篇加载）** → `topic_raw` → `full_raw`，每层由充分性探针 gate，根 wiki 始终在视野；

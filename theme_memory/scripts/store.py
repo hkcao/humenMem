@@ -236,7 +236,8 @@ def apply_wiki_ops(current_bullets, append=None, update=None, delete=None) -> li
 
 
 def update_topic_wiki(topic, append=None, update=None, delete=None, root_wiki=False) -> None:
-    """Read → apply local ops → write, for a topic wiki (or the root wiki if root_wiki=True)."""
+    """Read → apply local ops → write, for a topic wiki (or the root wiki if root_wiki=True).
+    For a topic wiki, any [[other-topic]] links it now contains get mirrored as backlinks."""
     current = read_root_wiki() if root_wiki else read_wiki(topic)
     bullets = apply_wiki_ops(wiki_bullets(current), append, update, delete)
     title = "# GLOBAL (cross-topic)" if root_wiki else f"# {topic}"
@@ -245,6 +246,42 @@ def update_topic_wiki(topic, append=None, update=None, delete=None, root_wiki=Fa
         write_root_wiki(text)
     else:
         write_wiki(topic, text)
+        sync_backlinks(topic)
+
+
+# --- bidirectional wikilinks ([[topic]]) ------------------------------------
+# A wiki line may reference a related topic inline as [[topic-name]]. After a topic wiki is
+# written, sync_backlinks mirrors each forward link as a backlink on the target, so the two
+# wikis interlink and you can jump either way. Additive + idempotent (fail-safe, like recall).
+
+WIKILINK = re.compile(r"\[\[([^\[\]]+)\]\]")
+_BACKLINK = "↔ "          # marks an auto-maintained backlink bullet
+
+
+def link_targets(text) -> set[str]:
+    """Topic names referenced as [[name]] in a wiki blob."""
+    return {m.strip() for m in WIKILINK.findall(text or "") if m.strip()}
+
+
+def sync_backlinks(topic) -> list[str]:
+    """For every [[X]] in `topic`'s wiki, ensure X's wiki links back to `topic` (append a
+    backlink bullet if X doesn't already mention [[topic]]). Returns the topics it touched."""
+    src = read_wiki(topic)
+    if not src:
+        return []
+    existing = set(list_topics())
+    touched = []
+    for tgt in link_targets(src):
+        if tgt == topic or tgt not in existing:   # only link real, other topics
+            continue
+        tgt_wiki = read_wiki(tgt)
+        if f"[[{topic}]]" in tgt_wiki:            # already interlinked
+            continue
+        bullets = wiki_bullets(tgt_wiki)
+        bullets.append(f"{_BACKLINK}[[{topic}]]")
+        write_wiki(tgt, render_wiki(f"# {tgt}", bullets))
+        touched.append(tgt)
+    return touched
 
 
 # --- root wiki (cross-topic global view) ------------------------------------
